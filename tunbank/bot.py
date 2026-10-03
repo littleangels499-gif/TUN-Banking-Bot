@@ -107,6 +107,14 @@ class TunBankBot(commands.Bot):
                     "Rows already sent are never repeated.", ORANGE))
         except Exception:  # noqa: BLE001
             log.exception("startup recovery failed")
+        try:
+            from .records import backfill_tax_turns
+            with self.db.tx() as conn:
+                n = backfill_tax_turns(conn)
+            if n:
+                log.info("Grouped existing tax records into %s turns (already announced)", n)
+        except Exception:  # noqa: BLE001
+            log.exception("tax-turn backfill failed")
         self.scan_loop.start()
         self.recon_loop.start()
         self.backup_loop.start()

@@ -21,7 +21,7 @@ from .pnw import PnWRejected, PnWUncertain
 from . import resolve as RS
 from .banks import live_holdings
 from .buttons import ActionView
-from .ui import (RefreshView, Services, actor_label, confirm, nation_arg, need, post_outcomes, reply,
+from .ui import (RefreshView, Services, has_flag, actor_label, confirm, nation_arg, need, post_outcomes, reply,
                  role_ids, thinking, xlsx_file)
 from .valuation import value_amounts
 
@@ -90,9 +90,9 @@ def register(bank: app_commands.Group, svc: Services):
         c.add(f"{icons.status('audit')} Last reconciliation", f"{lastrec['started_at']} → {lastrec['result']}" if lastrec else "never", True)
         return c
 
-    @bank.command(name="holdings", description="ECON: the full vault position (real bank vs member money)")
+    @bank.command(name="holdings", description="Confidential: the alliance vault (real banks, alliance-owned funds)")
     async def holdings(interaction: discord.Interaction):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_alliance_holdings"):
             return
         await thinking(interaction)
         card = await build_vault()
@@ -149,7 +149,7 @@ def register(bank: app_commands.Group, svc: Services):
         await svc.alerts.flush_events()
         return result
 
-    def recon_card(result) -> A.Card:
+    def recon_card(result, show_bank: bool = False) -> A.Card:
         ok = result["result"] == "OK"
         c = A.Card("Reconciliation " + result["result"], "", A.GREEN if ok else (A.ORANGE if result["result"] == "WARNING" else A.RED))
         if ok:
@@ -157,7 +157,7 @@ def register(bank: app_commands.Group, svc: Services):
         for f in result["findings"][:10]:
             c.add(f"{f['severity']}: {f['kind']}", f["message"])
         pos = result["position"]
-        if pos["bank"] is not None:
+        if pos["bank"] is not None and show_bank:
             c.add("Real bank vs member-held", f"Bank cash {fmt.dollars(pos['bank'].get('money', 0))} vs "
                   f"members {fmt.dollars(pos['member_total'].get('money', 0))}")
         c.add("Run", f"#{result['run_id']}", True)
@@ -169,7 +169,7 @@ def register(bank: app_commands.Group, svc: Services):
             return
         await thinking(interaction)
         result = await do_reconcile(f"discord:{interaction.user.id}")
-        await reply(interaction, card=recon_card(result))
+        await reply(interaction, card=recon_card(result, has_flag(svc, interaction, 'bank_view_alliance_holdings')))
 
     svc.do_reconcile = do_reconcile  # used by the background loop
 
@@ -339,7 +339,8 @@ def register(bank: app_commands.Group, svc: Services):
             tx_type="WITHDRAW_ECON", funding_source=src, member_nation_id=member_nation_id or None,
             lock_id=lock_id or None, dest_nation_id=destination_nation_id, amounts=parsed,
             actor=str(interaction.user.id), note=note or "TUN Bank", reason=reason,
-            idempotency_key=f"econ-{interaction.id}", actor_role_ids=role_ids(interaction), approver=approver)
+            idempotency_key=f"econ-{interaction.id}", actor_role_ids=role_ids(interaction), approver=approver,
+            reveal_treasury=has_flag(svc, interaction, "bank_view_alliance_holdings"))
         if approval_id and res.status != "BLOCKED":
             def done():
                 with svc.db.tx() as conn:

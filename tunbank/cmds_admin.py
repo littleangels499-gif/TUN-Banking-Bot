@@ -21,6 +21,7 @@ from . import perms
 from . import records as REC
 from . import resolve as RS
 from .config import DEFAULTS, cfg_get, cfg_set
+from .util import now_iso as B_now
 from .pnw import PnWRejected, PnWUncertain
 from .buttons import ActionView, ItemPager, open_form
 from .ui import (Services, actor_label, chunk_cards, confirm, nation_arg, need, paginate, post_outcomes, reply,
@@ -351,17 +352,142 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         await asyncio.to_thread(do)
         await reply(interaction, f"{role.mention} {'no longer has' if remove else 'now has'} **{level.value}**.")
 
-    @bankset.command(name="setlogchannel", description="Admin: set the private ECON log channel")
-    async def setlogchannel(interaction: discord.Interaction, channel: discord.TextChannel):
+    CHANNEL_KINDS = [app_commands.Choice(name="ECON log (financial alerts)", value="econ_log_channel_id"),
+                     app_commands.Choice(name="Tax alerts (one summary per turn)", value="tax_alert_channel_id")]
+
+    @bankset.command(name="setlogchannel", description="Admin: set the ECON log channel or the tax-alert channel")
+    @app_commands.describe(channel="The channel (keep it private)", kind="Which feed this channel receives (default: ECON log)")
+    @app_commands.choices(kind=CHANNEL_KINDS)
+    async def setlogchannel(interaction: discord.Interaction, channel: discord.TextChannel,
+                            kind: Optional[app_commands.Choice[str]] = None):
         if not await need(svc, interaction, "ADMIN"):
             return
+        key = kind.value if kind else "econ_log_channel_id"
+
         def do():
             with svc.db.tx() as conn:
-                cfg_set(conn, "econ_log_channel_id", str(channel.id), uid(interaction))
-                L.audit(conn, uid(interaction), "CONFIG_CHANGED", "econ_log_channel_id", {"value": channel.id})
+                cfg_set(conn, key, str(channel.id), uid(interaction))
+                L.audit(conn, uid(interaction), "CONFIG_CHANGED", key, {"value": channel.id})
         await asyncio.to_thread(do)
-        await reply(interaction, f"ECON log channel set to {channel.mention}. Make sure only ECON staff can see it.")
-        await svc.alerts.econ(A.Card("ECON log connected", "Financial alerts will appear here.", A.GREEN))
+        label = "Tax alert" if key == "tax_alert_channel_id" else "ECON log"
+        await reply(interaction, f"{label} channel set to {channel.mention}. Discord decides who can read it, so keep it private.")
+        card = A.Card(f"{label} channel connected", "Alerts will appear here.", A.GREEN)
+        if key == "tax_alert_channel_id":
+            await svc.alerts.tax(card)
+        else:
+            await svc.alerts.econ(card)
+
+    # ----------------------------------------------------- confidential-information access
+    FLAG_CHOICES = [app_commands.Choice(name=f, value=f) for f in perms.FLAGS]
+
+    @bankset.command(name="setaccess", description="Admin: choose which roles may see confidential alliance information")
+    @app_commands.describe(permission="Which confidential permission", role="The Discord role", remove="Remove instead of add")
+    @app_commands.choices(permission=FLAG_CHOICES)
+    async def setaccess(interaction: discord.Interaction, permission: app_commands.Choice[str], role: discord.Role, remove: bool = False):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+
+        def do():
+            with svc.db.tx() as conn:
+                perms.set_flag_role(conn, permission.value, str(role.id), add=not remove)
+                L.audit(conn, uid(interaction), "ACCESS_FLAG", permission.value, {"role": str(role.id), "remove": remove})
+        await asyncio.to_thread(do)
+        await reply(interaction, f"{role.mention} {'no longer has' if remove else 'now has'} `{permission.value}`.")
+
+    @bankset.command(name="access", description="Admin: who can see confidential alliance information")
+    async def access(interaction: discord.Interaction):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+        with svc.db.read() as conn:
+            rows = perms.list_flag_roles(conn)
+        c = A.Card(f"{icons.status('lock')} Confidential access",
+                   "Seeing members' accounts (Auditor/Banker/Minister) is **separate** from seeing the alliance treasury. "
+                   "Admins always have both.", A.BLUE)
+        for flag, desc in perms.FLAGS.items():
+            roles = [f"<@&{r['role_id']}>" for r in rows if r["flag"] == flag]
+            c.add(f"`{flag}`", desc + "\n**Roles:** " + (", ".join(roles) if roles else "_none: Admins only_"))
+        await reply(interaction, card=c)
+
+    # --------------------------------------------------------------- link a nation (admin)
+    @bank.command(name="linknation", description="Admin/ECON: link or relink a PnW nation to a Discord member")
+    @app_commands.describe(member="The Discord member", nation="Nation: id, name or link", force="ADMIN only: replace an existing link")
+    async def linknation(interaction: discord.Interaction, member: discord.User, nation: str, force: bool = False):
+        if not await need(svc, interaction, "MINISTER"):
+            return
+        await thinking(interaction)
+        nid = await nation_arg(svc, interaction, nation)
+        if nid is None:
+            return
+        try:
+            info = await svc.pnw.fetch_nation(nid)
+        except (PnWRejected, PnWUncertain) as exc:
+            info = None
+            verify_note = f"PnW could not be reached ({exc}); the nation could not be verified."
+        else:
+            verify_note = ""
+        if info is not None and int(info.get("alliance_id") or 0) not in svc.settings.bank_ids:
+            return await reply(interaction, f"{icons.status('bad')} Nation {nid} is not in our alliance, so it can't be linked.")
+        if info is None and not verify_note:
+            return await reply(interaction, f"{icons.status('bad')} PnW has no nation {nid}.")
+        names = {member.name.lower(), str(member).lower()}
+        verified = bool(info and (info.get("discord") or "").strip().lower() in names)
+        with svc.db.read() as conn:
+            nrow = L.get_member(conn, nid)
+            mrow = L.member_by_discord(conn, member.id)
+        owner = nrow["discord_id"] if nrow and nrow["discord_id"] else None
+        other_nation = mrow["nation_id"] if mrow and mrow["nation_id"] != nid else None
+        if owner == str(member.id):
+            return await reply(interaction, f"{icons.status('ok')} {member.mention} is already linked to nation [#{nid}]. Nothing to change.")
+        conflict = bool(owner or other_nation)
+        if conflict:
+            lines = []
+            if owner:
+                lines.append(f"Nation [#{nid}] is already linked to <@{owner}>.")
+            if other_nation:
+                lines.append(f"{member.mention} is already linked to nation [#{other_nation}].")
+            if not force or not await need_admin_quietly(interaction):
+                c = A.Card(f"{icons.status('warn')} Link conflict: nothing was changed", "\n".join(lines), A.ORANGE)
+                c.add("Why this matters", "A link decides who can withdraw a nation's deposit, so it is never changed silently.")
+                c.add("To replace it", "An **Admin** runs the same command with `force:true`. Both people are shown in the confirmation and the change is logged.")
+                return await reply(interaction, card=c)
+        label = (info or {}).get("nation_name") or f"nation {nid}"
+        card = A.Card(f"{icons.status('lock')} Confirm nation link", "A link gives this Discord account full control of the nation's TUN deposit.", A.ORANGE)
+        card.add("Member", f"{member.mention} ({member.name})", True)
+        card.add("Nation", f"{label} [#{nid}]", True)
+        card.add("PnW Discord field", (f"{info.get('discord') or '—'} " + ("✅ matches" if verified else "⚠️ does not match")) if info else verify_note)
+        if conflict:
+            card.add("REPLACES", "\n".join(lines))
+        card.add("Money", "Balances stay with the nation; only who may use them changes.")
+        if not await confirm(svc, interaction, card):
+            return await reply(interaction, "Cancelled. Nothing was changed.")
+        actor = uid(interaction)
+
+        def do():
+            with svc.db.tx() as conn:
+                L.ensure_member(conn, nid, (info or {}).get("nation_name"))
+                if owner:
+                    conn.execute("UPDATE members SET discord_id=NULL, discord_name=NULL WHERE nation_id=?", (nid,))
+                if other_nation:
+                    conn.execute("UPDATE members SET discord_id=NULL, discord_name=NULL WHERE nation_id=?", (other_nation,))
+                    conn.execute("INSERT INTO nation_link_history(nation_id,discord_id,previous_discord_id,action,actor,verified,note,at) "
+                                 "VALUES(?,?,?,?,?,?,?,?)", (other_nation, None, str(member.id), "UNLINKED_BY_RELINK", actor, int(verified), f"moved to nation {nid}", B_now()))
+                conn.execute("UPDATE members SET discord_id=?, discord_name=?, linked_at=datetime('now') WHERE nation_id=?",
+                             (str(member.id), member.name, nid))
+                conn.execute("INSERT INTO nation_link_history(nation_id,discord_id,previous_discord_id,action,actor,verified,note,at) "
+                             "VALUES(?,?,?,?,?,?,?,?)", (nid, str(member.id), owner, "RELINKED" if conflict else "LINKED", actor, int(verified),
+                                                         "admin link" + ("" if verified else " (PnW Discord field did not match)"), B_now()))
+                L.audit(conn, actor, "NATION_LINKED_BY_ADMIN", f"nation:{nid}", {
+                    "member": str(member.id), "previous_owner": owner, "member_previous_nation": other_nation,
+                    "verified_with_pnw": verified, "forced": bool(conflict)})
+        await asyncio.to_thread(do)
+        out = A.Card(f"{icons.status('ok')} Nation linked", f"{member.mention} ↔ {label} [#{nid}]", A.GREEN, kind="LINK")
+        out.add("By", actor_label(interaction), True)
+        out.add("Verified against PnW", "yes" if verified else "no (recorded as an Admin decision)", True)
+        await reply(interaction, card=out)
+        await svc.alerts.econ(out)
+
+    async def need_admin_quietly(interaction) -> bool:
+        return await need(svc, interaction, "ADMIN")
 
     @bankset.command(name="config", description="Admin: view or change a bank setting")
     async def config(interaction: discord.Interaction, key: str = "", value: str = ""):
@@ -417,7 +543,10 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
     @bank.command(name="records", description="ECON: export records to Excel")
     @app_commands.choices(kind=[app_commands.Choice(name=k, value=k) for k in X.KINDS])
     async def records(interaction: discord.Interaction, kind: app_commands.Choice[str]):
-        if not await need(svc, interaction, "AUDITOR"):
+        # alliance-wide money needs its own permission; member-level exports need only staff access
+        required = {"vault": "FLAG:bank_view_alliance_holdings", "offshore": "FLAG:bank_view_alliance_holdings",
+                    "grants": "FLAG:bank_view_alliance_holdings", "tax": "FLAG:bank_view_tax"}.get(kind.value, "AUDITOR")
+        if not await need(svc, interaction, required):
             return
         await thinking(interaction)
         snap = await svc.prices.get()
@@ -526,7 +655,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             await post_outcomes(svc, [out])
 
     # --------------------------------------------------------- opening balances
-    @bank.command(name="importopening", description="Admin: import opening balances from a spreadsheet (preview first)")
+    @bankset.command(name="importopening", description="Admin: import opening balances from a spreadsheet (preview first)")
     @app_commands.describe(file=".xlsx or .csv: nation_id plus one column per resource", note="Where this data came from")
     async def importopening(interaction: discord.Interaction, file: discord.Attachment, note: str):
         if not await need(svc, interaction, "ADMIN"):

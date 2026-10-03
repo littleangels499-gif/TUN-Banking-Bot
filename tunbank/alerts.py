@@ -86,7 +86,8 @@ def deposit_card(o, name: str | None = None) -> Card:
 
 
 def member_deposit_dm(o) -> Card:
-    c = Card(f"{icons.status('ok')} Your deposit was received", "Your TUN Bank account has been credited.", GREEN, kind="DEPOSIT")
+    c = Card(f"{icons.status('ok')} Your deposit was received", "Your TUN Bank account has been credited."
+             + (f"\nThis is the deposit you planned (#{o.intent})." if getattr(o, "intent", None) else ""), GREEN, kind="DEPOSIT")
     c.add("Deposited", _money_block(o.amounts, getattr(o, "valuation", None)))
     c.add("New available balance", fmt.amount_lines(o.after["available"]))
     c.add("PnW record", f"#{o.record_id}", True)
@@ -168,7 +169,8 @@ def integrity_card(f: dict) -> Card:
              RED if sev == "CRITICAL" else ORANGE, kind="INTEGRITY")
     c.add("Severity", sev, True)
     c.add("Event ID", f"#{f.get('event_id', '?')}", True)
-    det = {k: v for k, v in f.get("details", {}).items() if k != "message"}
+    hide = {"message", "bank", "shortfall", "member_total", "banks"}      # treasury figures stay out of shared channels
+    det = {k: v for k, v in f.get("details", {}).items() if k not in hide}
     if det:
         c.add("Evidence", "```json\n" + json.dumps(det, default=str)[:900] + "\n```")
     c.add("What to do", "Review with `/ledger dashboard`. Nothing was changed automatically; "
@@ -202,11 +204,50 @@ class AlertService:
         except Exception:  # noqa: BLE001
             log.exception("could not write alert_log")
 
-    async def econ(self, card: Card):
+    async def tax(self, card: Card):
+        """The tax-turn summary goes to the tax alert channel (or the ECON log when none is set)."""
         with self.db.read() as conn:
-            chan_id = cfg_get(conn, "econ_log_channel_id")
-        if not (self.bot and chan_id.isdigit()):
-            self._log(card, "econ", False, "no ECON log channel set (/bankset logchannel)")
+            chan = cfg_get(conn, "tax_alert_channel_id")
+        await self.econ(card, channel_id=chan if chan.isdigit() else None)
+
+    async def flush_tax_turns(self, prices):
+        """One summary per finished turn: totals only, never a member list."""
+        import datetime as dt
+
+        from . import ledger as L
+        from .config import cfg_int
+        from .util import ISO_FMT, utcnow
+        from .valuation import value_amounts
+
+        with self.db.read() as conn:
+            settle = cfg_int(conn, "tax_alert_settle_seconds")
+            cutoff = (utcnow() - dt.timedelta(seconds=settle)).strftime(ISO_FMT)
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM tax_turns WHERE alerted_at IS NULL AND last_seen_at<=? ORDER BY turn_key", (cutoff,))]
+        if not rows:
+            return
+        snap = await prices.get()
+        for r in rows:
+            totals = json.loads(r["totals_json"])
+            val = value_amounts(totals, snap)
+            others = {k: v for k, v in totals.items() if k != "money"}
+            when = dt.datetime.strptime(r["turn_key"], "%Y-%m-%d %H")
+            c = Card("💰 Tax Collection — Turn Complete", f"{when:%d %b %Y} — {when:%H:%M} UTC", GREEN, kind="TAX_TURN")
+            c.add(f"{icons.resource('money')} Cash", fmt.dollars(totals.get("money", 0)), True)
+            c.add("Resources", fmt.amount_lines(others), True)
+            c.add("\u200b", fmt.value_line(val), False)
+            c.footer = "Totals only · member details: /tax report · TUN Bank"
+            await self.tax(c)
+            with self.db.tx() as conn:
+                conn.execute("UPDATE tax_turns SET alerted_at=?, value_cents=?, price_snapshot_id=? WHERE turn_key=?",
+                             (now_iso(), val.total_cents, snap.id if snap else None, r["turn_key"]))
+                L.audit(conn, "system", "TAX_TURN_ALERTED", f"turn:{r['turn_key']}", {"records": r["records"]})
+
+    async def econ(self, card: Card, channel_id=None):
+        with self.db.read() as conn:
+            chan_id = channel_id or cfg_get(conn, "econ_log_channel_id")
+        if not (self.bot and str(chan_id).isdigit()):
+            self._log(card, "econ", False, "no channel set (/bankset setlogchannel)")
             log.warning("ECON alert not delivered (no channel): %s", card.title)
             return
         try:

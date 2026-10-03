@@ -165,35 +165,52 @@ class PnWClient:
         return M.clean({r: M.to_units(row.get(r)) for r in M.RESOURCES})
 
     async def fetch_prices(self) -> dict:
-        """Latest PnW trade prices {resource: price per unit}. Self-correcting: if PnW says a field
-        doesn't exist it is dropped and the request retried, so one renamed field can't blank every price."""
+        """Latest PnW trade prices {resource: price per unit}.
+
+        Current PnW schema (confirmed from PnW's own error message): `tradeprices(first: Int, page: Int)` returns a
+        paginator `{ paginatorInfo { lastPage } data { id date <resources> } }`. We read page 1; if the list turns out to
+        be oldest-first we read the LAST page, and always take the newest row. If PnW says a field doesn't exist, that
+        one field is dropped and the request retried (so one rename can't blank every price)."""
         import re
 
         fields = ["id", "date"] + list(M.NON_CASH)
-        for _ in range(len(fields) + 1):
-            q = "{ tradeprices(limit:5){ " + " ".join(fields) + " } }"
-            try:
-                data = await self.query(q)
-            except PnWRejected as exc:
-                m = re.search(r'Cannot query field "(\w+)" on type "Tradeprice"', str(exc))
-                if m and m.group(1) in fields:
-                    fields.remove(m.group(1))
-                    continue
-                raise
-            rows = data.get("tradeprices") or []
-            if not rows:
-                raise PnWUncertain("PnW returned no trade prices")
+        info = True
 
-            def newest_first(r):
+        async def page(n: int):
+            nonlocal info
+            for _ in range(len(fields) + 3):
+                q = ("{ tradeprices(first: 25, page: %d){ %s data{ %s } } }"
+                     % (n, "paginatorInfo{ lastPage }" if info else "", " ".join(fields)))
                 try:
-                    ident = int(r.get("id") or 0)
-                except (TypeError, ValueError):
-                    ident = 0
-                return (str(r.get("date") or ""), ident)
+                    return (await self.query(q)).get("tradeprices") or {}
+                except PnWRejected as exc:
+                    msg = str(exc)
+                    m = re.search(r'Cannot query field "(\w+)" on type "Tradeprice"', msg)
+                    if m and m.group(1) in fields and m.group(1) != "id":
+                        fields.remove(m.group(1))
+                        continue
+                    if info and 'on type "PaginatorInfo"' in msg:
+                        info = False
+                        continue
+                    raise
+            raise PnWRejected("PnW did not accept the price request.")
 
-            row = sorted(rows, key=newest_first, reverse=True)[0]
-            return {r: Decimal(str(row[r])) for r in M.NON_CASH if row.get(r) is not None}
-        raise PnWRejected("PnW did not accept the price request.")
+        def key(r):
+            try:
+                ident = int(r.get("id") or 0)
+            except (TypeError, ValueError):
+                ident = 0
+            return (str(r.get("date") or ""), ident)
+
+        first = await page(1)
+        rows = list(first.get("data") or [])
+        if not rows:
+            raise PnWUncertain("PnW returned no trade prices")
+        last_page = int(((first.get("paginatorInfo") or {}).get("lastPage")) or 1)
+        if last_page > 1 and key(rows[0]) <= key(rows[-1]):          # oldest-first: the newest rows are on the last page
+            rows += list((await page(last_page)).get("data") or [])
+        row = sorted(rows, key=key, reverse=True)[0]
+        return {r: Decimal(str(row[r])) for r in M.NON_CASH if row.get(r) is not None}
 
     async def fetch_alliance_members(self) -> dict:
         """{nation_id: nation_name} for real (non-applicant) alliance members."""

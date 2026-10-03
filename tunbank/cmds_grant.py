@@ -18,7 +18,7 @@ from . import resolve as RS
 from .buttons import ActionView
 from .config import cfg_get, cfg_int
 from .pnw import PnWRejected, PnWUncertain
-from .ui import Services, actor_label, chunk_cards, confirm, nation_arg, need, paginate, reply, role_ids, thinking
+from .ui import Services, actor_label, chunk_cards, confirm, has_flag, nation_arg, need, paginate, reply, role_ids, thinking
 from .util import jdump, now_iso
 from .valuation import value_amounts
 
@@ -122,7 +122,8 @@ def register(grant: app_commands.Group, svc: Services):
         res = await svc.wd.request(
             tx_type="WITHDRAW_ECON", funding_source="ALLIANCE", member_nation_id=None, lock_id=None, dest_nation_id=nid,
             amounts=parsed, actor=actor, note=f"Grant: {purpose.strip()[:60]}", reason=f"grant #{gid}: {purpose.strip()}",
-            idempotency_key=f"grant-{gid}", actor_role_ids=role_ids(interaction), approver=approver)
+            idempotency_key=f"grant-{gid}", actor_role_ids=role_ids(interaction), approver=approver,
+            reveal_treasury=has_flag(svc, interaction, "bank_view_alliance_holdings"))
         status = {"COMPLETED": "COMPLETED", "UNCERTAIN": "UNCERTAIN"}.get(res.status, "FAILED")
 
         def save():

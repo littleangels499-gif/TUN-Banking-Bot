@@ -17,11 +17,12 @@ from .banks import live_holdings
 from .buttons import ActionView, open_form
 from .config import cfg_get
 from .pnw import PnWRejected, PnWUncertain
-from .ui import Services, actor_label, confirm, need, reply, thinking
+from .ui import Services, actor_label, confirm, has_flag, need, reply, thinking
 from .valuation import value_amounts
 
 log = logging.getLogger("tunbank.offshore")
 ICON = {"COMPLETED": "✅", "PLANNED": "📝", "PENDING": "⏳", "UNCERTAIN": "⚠️", "FAILED": "⛔", "CANCELLED": "🚫"}
+LABEL = {"PLANNED": "Waiting for the real PnW transfer", "UNCERTAIN": "Unconfirmed (will complete when PnW shows it)"}
 
 NOT_CONFIGURED = (f"{icons.status('info')} No offshore is configured. Add `OFFSHORE_ALLIANCE_ID`, `OFFSHORE_API_KEY` and "
                   "`OFFSHORE_BOT_KEY` to your `.env` / Railway variables (see docs/10_OFFSHORE.md).")
@@ -60,7 +61,7 @@ def register(bank: app_commands.Group, svc: Services):
         c.add("Who may offshore", {"MEMBERS": "Staff and members", "ADMIN": "Admins only"}.get(who.upper(), "Staff (Banker and above)"), True)
         rows = recent()
         c.add("Recent transfers", "\n".join(
-            f"{ICON.get(r['status'], '')} **#{r['id']}** {r['status'].title()} · {fmt.short_amounts(json.loads(r['amounts_json']))} · "
+            f"{ICON.get(r['status'], '')} **#{r['id']}** {LABEL.get(r['status'], r['status'].title())} · {fmt.short_amounts(json.loads(r['amounts_json']))} · "
             f"{fmt.dollars(r['value_cents'])}\n-# {r['mode'].title()} · {r['created_at'][:16].replace('T', ' ')}"
             + (f" · PnW #{r['pnw_record_id']}" if r["pnw_record_id"] else "") for r in rows) or "_None yet_")
         return c
@@ -70,9 +71,11 @@ def register(bank: app_commands.Group, svc: Services):
     async def offshore(interaction: discord.Interaction, amounts: str = "", reason: str = ""):
         await thinking(interaction)
         if not off or not off.enabled:
+            if not await need(svc, interaction, "FLAG:bank_view_alliance_holdings"):
+                return
             return await reply(interaction, NOT_CONFIGURED)
         if not amounts.strip():
-            if not await need(svc, interaction, "AUDITOR"):
+            if not await need(svc, interaction, "FLAG:bank_view_alliance_holdings"):
                 return
 
             async def b_move(i):
@@ -107,13 +110,17 @@ def register(bank: app_commands.Group, svc: Services):
             except L.FinancialBlocked as exc:
                 return await reply(interaction, f"{icons.status('lock')} {exc}")
         main_held = per["main"]
+        reveal = has_flag(svc, interaction, "bank_view_alliance_holdings")
         short = []
         for r, a in parsed.items():
             eligible = max(0, main_held.get(r, 0) - keep.get(r, 0))
             if eligible < a:
                 short.append(f"{M.LABELS[r]}: {M.fmt_units(r, eligible)} can move, {M.fmt_units(r, a)} asked"
-                             + (" (the rest is kept in the main bank by policy)" if keep.get(r) else ""))
+                             + (" (the rest is kept in the main bank by policy)" if keep.get(r) else "") if reveal
+                             else f"{M.LABELS[r]}")
         if short:
+            if not reveal:
+                return await reply(interaction, f"{icons.status('bad')} The main bank can't cover that transfer right now (" + ", ".join(short) + ").")
             return await reply(interaction, f"{icons.status('bad')} The **main bank** doesn't hold enough to move that:\n" + "\n".join(short))
         snap = await svc.prices.get()
         val = value_amounts(parsed, snap)
@@ -123,8 +130,9 @@ def register(bank: app_commands.Group, svc: Services):
         card.add("From → To", f"🏦 Main bank → 🏝️ Offshore bank", True)
         card.add("Sent how", "Automatically by the bot" if auto else "You send it in-game (the bot gives you the exact note)", True)
         card.add("Amount", fmt.amounts_with_value(parsed, val))
-        card.add("Main bank after", fmt.amount_lines(M.sub(main_held, parsed)), True)
-        card.add("Offshore after", fmt.amount_lines(M.add(per["offshore"], parsed)), True)
+        if reveal:
+            card.add("Main bank after", fmt.amount_lines(M.sub(main_held, parsed)), True)
+            card.add("Offshore after", fmt.amount_lines(M.add(per["offshore"], parsed)), True)
         card.add("Reason", reason)
         if not await confirm(svc, interaction, card):
             return await reply(interaction, "Cancelled. Nothing was moved.")

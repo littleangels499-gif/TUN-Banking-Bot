@@ -40,6 +40,7 @@ class Result:
     before: dict | None = None
     after: dict | None = None
     replay: bool = False
+    internal: str | None = None   # detail for ECON only; never shown to the member
 
 
 class WithdrawalService:
@@ -62,7 +63,8 @@ class WithdrawalService:
     # ----------------------------------------------------------- request
     async def request(self, *, tx_type, funding_source, member_nation_id, lock_id, dest_nation_id,
                       amounts, actor, note, reason, idempotency_key, actor_role_ids=(),
-                      approver=None) -> Result:
+                      approver=None, reveal_treasury: bool = False) -> Result:
+        """reveal_treasury=False (default) keeps alliance bank figures out of every message."""
         try:
             snap, val, alliance_free = await self.prepare(funding_source=funding_source, amounts=amounts)
         except (PnWRejected, PnWUncertain) as exc:
@@ -77,8 +79,13 @@ class WithdrawalService:
         if short:
             where = self.s.payout.name
             hint = " ECON can move funds there with /bank offshore." if self.s.offshore else ""
-            return Result("BLOCKED", f"The {where} bank does not physically hold enough " +
-                          ", ".join(M.LABELS[r] for r in short) + f" right now.{hint}", valuation=val)
+            detail = (f"The {where} bank does not physically hold enough " + ", ".join(M.LABELS[r] for r in short)
+                      + f" right now.{hint}")
+            if reveal_treasury:
+                return Result("BLOCKED", detail, valuation=val, internal=detail)
+            # Everyone else learns nothing about what the bank holds: a generic message, and ECON gets the detail.
+            return Result("BLOCKED", "This withdrawal can't be processed right now. ECON has been notified; your balance is unchanged.",
+                          valuation=val, internal=detail)
 
         def begin():
             with self.db.tx() as conn:
@@ -99,6 +106,8 @@ class WithdrawalService:
         try:
             tx_id, created, _ = await asyncio.to_thread(begin)
         except L.LedgerError as exc:
+            if funding_source == "ALLIANCE" and isinstance(exc, L.InsufficientFunds) and not reveal_treasury:
+                return Result("BLOCKED", "The alliance-owned funds are not sufficient for this payment.", valuation=val)
             return Result("BLOCKED", str(exc), valuation=val)
 
         if not created:

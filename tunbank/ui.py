@@ -41,11 +41,25 @@ def levels(svc: Services, interaction: discord.Interaction) -> set:
         return perms.levels_for(conn, interaction.user.id, role_ids(interaction), svc.settings.owner_ids)
 
 
+def icons_lock() -> str:
+    from . import icons
+    return icons.status("lock")
+
+
+def has_flag(svc: Services, interaction: discord.Interaction, flag: str) -> bool:
+    return ("FLAG:" + flag) in levels(svc, interaction)
+
+
 async def need(svc: Services, interaction: discord.Interaction, level: str) -> bool:
     """True if allowed. Otherwise answers the user privately and returns False."""
     if perms.has(levels(svc, interaction), level):
         return True
-    text = f"You need the **{level.title()}** permission for this command."
+    if level.startswith("FLAG:"):
+        flag = level[5:]
+        text = (f"{icons_lock()} This is **confidential alliance information**. It needs the `{flag}` permission, which an Admin "
+                "can give to specific roles with `/bankset setaccess`. Being on the ECON team does not include it.")
+    else:
+        text = f"You need the **{level.title()}** permission for this command."
     if interaction.response.is_done():
         await interaction.followup.send(text, ephemeral=True)
     else:
@@ -148,10 +162,14 @@ async def post_outcomes(svc: Services, outcomes):
                 await svc.alerts.econ(A.deposit_card(o, name))
                 if o.before is not None:
                     await svc.alerts.dm(svc.alerts.discord_id_for(o.nation_id), A.member_deposit_dm(o))
-            elif o.kind in ("TAX", "DONATION", "LOAN", "REVIEW", "OUTGOING_LINKED", "EXTERNAL_OUTFLOW", "OFFSHORE"):
+            elif o.kind in ("DONATION", "LOAN", "REVIEW", "OUTGOING_LINKED", "EXTERNAL_OUTFLOW", "OFFSHORE"):
                 await svc.alerts.econ(A.classified_card(o, name))
         except Exception:  # noqa: BLE001
             log.exception("could not send alert for record %s", getattr(o, "record_id", "?"))
+    try:
+        await svc.alerts.flush_tax_turns(svc.prices)
+    except Exception:  # noqa: BLE001
+        log.exception("could not post the tax-turn summary")
 
 
 async def _unused_post_events(svc: Services, findings):

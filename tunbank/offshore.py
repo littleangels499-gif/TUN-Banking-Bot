@@ -95,8 +95,12 @@ class OffshoreService:
             rec = await self.pnw.bank_withdraw(self.s.offshore.alliance_id, amounts, self.note_for(tid, row["reason"]),
                                                receiver_type=self.s.alliance_receiver_type, bank=self.s.main)
         except PnWRejected as exc:
+            hint = ""
+            if any(w in str(exc).lower() for w in ("receiver", "type")):
+                hint = (f" The bot used receiver_type={self.s.alliance_receiver_type} for \"send to an alliance\". That number is a setting "
+                        "(ALLIANCE_RECEIVER_TYPE in .env), not an assumption: if PnW's message above says it is wrong, change it.")
             await asyncio.to_thread(self._set, tid, "FAILED", f"PnW refused the transfer: {exc}")
-            return {"status": "FAILED", "message": f"PnW refused the transfer, nothing moved: {exc}"}
+            return {"status": "FAILED", "message": f"PnW refused the transfer, nothing moved: {exc}.{hint}"}
         except PnWUncertain as exc:
             return await self._unknown(tid, f"PnW did not give a clear answer ({exc})")
         except Exception as exc:  # noqa: BLE001

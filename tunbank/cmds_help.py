@@ -14,7 +14,8 @@ from . import perms
 from .ui import Services, levels, reply
 
 # ---- level badges
-BADGE = {"ALL": "", "AUDITOR": "👁️ Auditor", "BANKER": "🏦 Banker", "MINISTER": "🛡️ Minister", "ADMIN": "👑 Admin"}
+BADGE = {"ALL": "", "AUDITOR": "👁️ Auditor", "BANKER": "🏦 Banker", "MINISTER": "🛡️ Minister", "ADMIN": "👑 Admin",
+         "FLAG:bank_view_alliance_holdings": "🔒 Treasury access", "FLAG:bank_view_tax": "🔒 Tax access"}
 
 # ---- categories: key -> (button label, emoji, blurb)
 CATEGORIES = {
@@ -25,7 +26,7 @@ CATEGORIES = {
     "tax": ("Tax", "🧾", "Tax collected from members. Alliance-owned; members never see this."),
     "audit": ("Audit & security", "🔎", "Checks, approvals and the emergency lock."),
     "charts": ("Charts", "📊", "Pictures drawn from the bank's real data."),
-    "config": ("Configuration", "⚙️", "Roles, limits, icons, channels and backups."),
+    "config": ("Configuration", "⚙️", "Roles, confidential-access permissions, limits, icons, channels, imports and backups."),
 }
 
 # ---- every command: "path" -> (category, minimum level)
@@ -36,30 +37,30 @@ CATALOG = {
     "chart mybalance": ("account", "ALL"), "chart mytrend": ("account", "ALL"),
     "prices": ("account", "ALL"), "help": ("account", "ALL"),
     # banking
-    "bank holdings": ("banking", "AUDITOR"), "bank transactions": ("banking", "AUDITOR"), "bank records": ("banking", "AUDITOR"),
+    "bank holdings": ("banking", "FLAG:bank_view_alliance_holdings"), "bank transactions": ("banking", "AUDITOR"), "bank records": ("banking", "AUDITOR"),
     "bank scandeposits": ("banking", "BANKER"), "bank withdraw": ("banking", "BANKER"),
     "bank reserve": ("banking", "MINISTER"), "bank release": ("banking", "MINISTER"), "bank adjust": ("banking", "MINISTER"),
     "bank freeze": ("banking", "MINISTER"), "bank unfreeze": ("banking", "MINISTER"), "bank lock": ("banking", "MINISTER"),
     "bank unlock": ("banking", "MINISTER"), "bank review": ("banking", "MINISTER"), "bank resolvetx": ("banking", "MINISTER"),
-    "bank importopening": ("banking", "ADMIN"), "bank offshore": ("banking", "AUDITOR"),
+    "bank offshore": ("banking", "BANKER"), "bank linknation": ("banking", "MINISTER"),
     "grant send": ("banking", "MINISTER"), "grant list": ("banking", "AUDITOR"), "grant view": ("banking", "AUDITOR"),
     # bulk
     "bulk template": ("bulk", "BANKER"), "bulk send": ("bulk", "BANKER"), "bulk resume": ("bulk", "BANKER"),
     "bulk status": ("bulk", "AUDITOR"),
     # tax
-    "tax sync": ("tax", "BANKER"), "tax dashboard": ("tax", "AUDITOR"), "tax report": ("tax", "AUDITOR"),
-    "tax paid": ("tax", "AUDITOR"), "tax profile": ("tax", "AUDITOR"), "tax brackets": ("tax", "AUDITOR"),
-    "tax exemptions": ("tax", "AUDITOR"), "tax export": ("tax", "AUDITOR"),
+    "tax sync": ("tax", "BANKER"), "tax turns": ("tax", "FLAG:bank_view_tax"), "tax dashboard": ("tax", "FLAG:bank_view_tax"), "tax report": ("tax", "FLAG:bank_view_tax"),
+    "tax paid": ("tax", "FLAG:bank_view_tax"), "tax profile": ("tax", "FLAG:bank_view_tax"), "tax brackets": ("tax", "FLAG:bank_view_tax"),
+    "tax exemptions": ("tax", "FLAG:bank_view_tax"), "tax export": ("tax", "FLAG:bank_view_tax"),
     # audit & security
     "bank reconcile": ("audit", "AUDITOR"), "bank approvals": ("audit", "AUDITOR"), "bank approve": ("audit", "MINISTER"),
     "bank revoke": ("audit", "MINISTER"), "audit transactions": ("audit", "AUDITOR"), "audit stafflog": ("audit", "AUDITOR"),
     "audit nation": ("audit", "AUDITOR"), "audit run": ("audit", "AUDITOR"), "ledger reconcile": ("audit", "AUDITOR"),
     "ledger dashboard": ("audit", "AUDITOR"), "ledger emergencylock": ("audit", "MINISTER"), "ledger resolve": ("audit", "ADMIN"),
     # charts (staff)
-    "chart nation": ("charts", "AUDITOR"), "chart vault": ("charts", "AUDITOR"), "chart members": ("charts", "AUDITOR"),
-    "chart deposits": ("charts", "AUDITOR"), "chart tax": ("charts", "AUDITOR"),
+    "chart nation": ("charts", "AUDITOR"), "chart vault": ("charts", "FLAG:bank_view_alliance_holdings"), "chart members": ("charts", "FLAG:bank_view_alliance_holdings"),
+    "chart deposits": ("charts", "AUDITOR"), "chart tax": ("charts", "FLAG:bank_view_tax"),
     # configuration
-    "bankset limits": ("config", "AUDITOR"), "bankset listbankers": ("config", "AUDITOR"), "bankset icons": ("config", "ADMIN"),
+    "bankset limits": ("config", "AUDITOR"), "bankset importopening": ("config", "ADMIN"), "bankset setaccess": ("config", "ADMIN"), "bankset access": ("config", "ADMIN"), "bankset listbankers": ("config", "AUDITOR"), "bankset icons": ("config", "ADMIN"),
     "bankset setrole": ("config", "ADMIN"), "bankset setlogchannel": ("config", "ADMIN"), "bankset config": ("config", "ADMIN"),
     "bankset seticon": ("config", "ADMIN"), "bankset addbanker": ("config", "ADMIN"), "bankset removebanker": ("config", "ADMIN"),
     "bankset settransferlimit": ("config", "ADMIN"), "bankset setdailylimit": ("config", "ADMIN"),
@@ -67,7 +68,7 @@ CATALOG = {
     "bankset requireapproval": ("config", "ADMIN"), "bankset backup": ("config", "ADMIN"), "bankset restorestage": ("config", "ADMIN"),
 }
 PER_PAGE = 7
-ORDER = ["ALL", "AUDITOR", "BANKER", "MINISTER", "ADMIN"]
+ORDER = ["ALL", "AUDITOR", "BANKER", "MINISTER", "ADMIN", "FLAG:bank_view_alliance_holdings", "FLAG:bank_view_tax"]
 
 
 def iter_commands(tree):
@@ -121,6 +122,8 @@ def start_card(user_levels: set) -> A.Card:
     c.add("🔑 Your access", " · ".join(names))
     c.add("Quick start", "1. `/nation link` - connect your nation\n2. `/bank dashboard` - see your account (it has buttons for withdrawing)\n"
                          "3. `/bank deposit` - learn how to deposit")
+    c.add("Confidential", "Members never see the alliance's bank holdings. ECON staff see members' accounts; the alliance treasury and tax "
+                          "need their own permission, which an Admin gives to specific roles.")
     c.add("Deposit notes", "No note = credited to you.\n`#ignore` = donation to the alliance (not credited)\n"
                            "`#loan repayment` = loan repayment (not credited)")
     c.add("Using this help", "Press a **category button** below to see its commands. Some categories have several pages: use ◀ ▶.")
@@ -207,7 +210,9 @@ def register(tree, svc: Services):
         async def q_ledger(i):
             await svc.actions["ledger"](i)
         quick = [("My dashboard", "🏦", q_dash), ("Market prices", "💹", q_prices)]
+        if perms.has(lv, "FLAG:bank_view_alliance_holdings"):
+            quick.append(("Vault", "🏛️", q_vault))
         if perms.has(lv, "AUDITOR"):
-            quick += [("Vault", "🏛️", q_vault), ("Integrity", "🛡️", q_ledger)]
+            quick.append(("Integrity", "🛡️", q_ledger))
         view = HelpView(interaction.user.id, tree, lv, quick)
         await reply(interaction, card=view.card(), view=view)

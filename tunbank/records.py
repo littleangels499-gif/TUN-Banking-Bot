@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 
 from . import bankrec as B
+from . import intents as INT
 from . import ledger as L
 from . import money as M
 from .config import cfg_bool, cfg_get, cfg_int
@@ -35,6 +36,7 @@ class Outcome:
     warnings: list = field(default_factory=list)
     tx_id: int | None = None
     new_events: list = field(default_factory=list)
+    intent: int | None = None
 
 
 def _banks(ctx: "Ctx") -> set:
@@ -144,6 +146,7 @@ def process_record(conn, rec: dict, ctx: Ctx) -> Outcome:
         res = L.credit_deposit(conn, pnw_record_id=n["id"], nation_id=nation, amounts=n["amounts"],
                                actor="system:scanner", snapshot_id=ctx.snapshot_id, note=n["note"])
         out.kind, out.before, out.after, out.nation_id = "CREDIT", res["before"], res["after"], nation
+        out.intent = INT.match(conn, nation, n["amounts"], n["id"])
         _flag_large(conn, n, ctx, out)
         return out
 
@@ -204,7 +207,52 @@ def _process_offshore_transfer(conn, n: dict, ctx: Ctx) -> Outcome:
     return out
 
 
+def turn_key(record_date: str) -> str:
+    """PnW turns are 2 hours long and start on even UTC hours. 2026-10-02 14:00:03 -> '2026-10-02 14'."""
+    import datetime as dt
+
+    text = (record_date or "").strip().replace("T", " ").replace("Z", "")[:19]
+    try:
+        d = dt.datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        try:
+            d = dt.datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            d = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    return f"{d:%Y-%m-%d} {d.hour - d.hour % 2:02d}"
+
+
+def _turn_add(conn, n: dict, ctx: Ctx):
+    key = turn_key(n["record_date"])
+    row = conn.execute("SELECT * FROM tax_turns WHERE turn_key=?", (key,)).fetchone()
+    totals = M.add(json.loads(row["totals_json"]) if row else {}, n["amounts"])
+    now = now_iso()
+    if row:
+        conn.execute("UPDATE tax_turns SET records=records+1, totals_json=?, last_seen_at=? WHERE turn_key=?", (jdump(totals), now, key))
+    else:
+        conn.execute("INSERT INTO tax_turns(turn_key,started_at,records,totals_json,last_seen_at,alerted_at) VALUES(?,?,?,?,?,?)",
+                     (key, key + ":00", 1, jdump(totals), now, "baseline" if ctx.baseline else None))
+
+
+def backfill_tax_turns(conn) -> int:
+    """One-time, after the upgrade that added per-turn summaries: group the tax records already stored into turns and mark
+    them as already announced, so the next alert is the true total of the next turn and old history is never re-announced."""
+    if conn.execute("SELECT COUNT(*) FROM tax_turns").fetchone()[0] or not conn.execute("SELECT 1 FROM tax_records LIMIT 1").fetchone():
+        return 0
+    turns: dict = {}
+    for r in conn.execute("SELECT record_date, recorded_at, amounts_json FROM tax_records ORDER BY id"):
+        key = turn_key(r["record_date"] or r["recorded_at"])
+        t = turns.setdefault(key, {"n": 0, "totals": {}})
+        t["n"] += 1
+        t["totals"] = M.add(t["totals"], json.loads(r["amounts_json"]))
+    for key, t in turns.items():
+        conn.execute("INSERT INTO tax_turns(turn_key,started_at,records,totals_json,last_seen_at,alerted_at) VALUES(?,?,?,?,?,'backfill')",
+                     (key, key + ":00", t["n"], jdump(t["totals"]), now_iso()))
+    return len(turns)
+
+
 def _store_tax(conn, n: dict, ctx: Ctx):
+    _turn_add(conn, n, ctx)
     conn.execute(
         "INSERT OR IGNORE INTO tax_records(pnw_record_id,nation_id,tax_id,record_date,amounts_json,"
         "price_snapshot_id,recorded_at) VALUES(?,?,?,?,?,?,?)",

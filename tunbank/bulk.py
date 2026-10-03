@@ -175,7 +175,7 @@ def finish(conn, batch_id: int) -> str:
     return status
 
 
-async def run_batch(svc, batch_id: int, actor: str, role_ids) -> dict:
+async def run_batch(svc, batch_id: int, actor: str, role_ids, reveal: bool = False) -> dict:
     """Send every PENDING item, one at a time, through the normal safe withdrawal pipeline."""
     if batch_id in _RUNNING:
         return {"error": "This batch is already running."}
@@ -198,7 +198,8 @@ async def run_batch(svc, batch_id: int, actor: str, role_ids) -> dict:
                 tx_type="WITHDRAW_ECON", funding_source="ALLIANCE", member_nation_id=None, lock_id=None,
                 dest_nation_id=it["nation_id"], amounts=amounts, actor=str(actor),
                 note=it["note"] or f"TUN Bank bulk #{batch_id}", reason=f"bulk #{batch_id}: {batch['reason']}",
-                idempotency_key=f"bulk-{batch_id}-{it['row_no']}", actor_role_ids=role_ids, approver=approver)
+                idempotency_key=f"bulk-{batch_id}-{it['row_no']}", actor_role_ids=role_ids, approver=approver,
+                reveal_treasury=reveal)
             status = {"COMPLETED": "COMPLETED", "FAILED": "FAILED", "UNCERTAIN": "UNCERTAIN"}.get(res.status)
             if res.status == "BLOCKED" and any(k in res.message for k in SYSTEMIC):
                 halted_why = res.message           # leave the row PENDING so /bulk resume can continue

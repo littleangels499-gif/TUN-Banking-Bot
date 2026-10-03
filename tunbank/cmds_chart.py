@@ -94,9 +94,9 @@ def register(chart: app_commands.Group, svc: Services):
                 return C.deposits(conn, snap, days, nid, lab)
         await send(interaction, build, f"{kind.value}.png", f"{lab}: {kind.name}", "Drawn from the ledger.")
 
-    @chart.command(name="vault", description="ECON: alliance-owned vs member-held funds per resource")
+    @chart.command(name="vault", description="Confidential: alliance-owned vs member-held funds per resource")
     async def vault(interaction: discord.Interaction):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_alliance_holdings"):
             return
         await thinking(interaction)
         snap = await svc.prices.get()
@@ -106,9 +106,9 @@ def register(chart: app_commands.Group, svc: Services):
                 return C.vault(conn, snap)
         await send(interaction, build, "vault.png", "Alliance vs member-held", "From the latest reconciliation.")
 
-    @chart.command(name="members", description="ECON: all member-held funds by resource")
+    @chart.command(name="members", description="Confidential: all member-held funds by resource")
     async def members(interaction: discord.Interaction):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_alliance_holdings"):
             return
         await thinking(interaction)
         snap = await svc.prices.get()
@@ -132,10 +132,10 @@ def register(chart: app_commands.Group, svc: Services):
                 return C.deposits(conn, snap, days)
         await send(interaction, build, "deposits.png", "Deposits per day", f"Last {days} days.")
 
-    @chart.command(name="tax", description="ECON: tax collected per day (alliance-owned)")
+    @chart.command(name="tax", description="Confidential: tax collected per day (alliance-owned)")
     @app_commands.describe(days="Days to show (7-90)")
     async def tax(interaction: discord.Interaction, days: int = 30):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_tax"):
             return
         await thinking(interaction)
         days = max(7, min(90, days))

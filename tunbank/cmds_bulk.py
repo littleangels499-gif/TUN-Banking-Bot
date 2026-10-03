@@ -21,7 +21,7 @@ from .buttons import ActionView
 from .config import cfg_int
 from .pnw import PnWRejected, PnWUncertain
 from .resolve import ResolveError, resolve
-from .ui import Services, chunk_cards, confirm, need, paginate, reply, role_ids, thinking
+from .ui import Services, chunk_cards, confirm, has_flag, need, paginate, reply, role_ids, thinking
 from .valuation import value_amounts
 
 log = logging.getLogger("tunbank.bulk")
@@ -142,13 +142,15 @@ def register(bulk: app_commands.Group, svc: Services):
         except (PnWRejected, PnWUncertain) as exc:
             return await reply(interaction, f"I can't read the live PnW bank, so nothing can be sent: {exc}")
         actor = str(interaction.user.id)
+        reveal = has_flag(svc, interaction, "bank_view_alliance_holdings")
         with svc.db.read() as conn:
             held = L.holds(conn, None, "ALLIANCE")
             free = M.sub(alliance_free, held)
             for r, need_units in totals.items():
                 if free.get(r, 0) < need_units:
                     errors.append(f"Alliance-owned {M.LABELS[r]} is short: {M.fmt_units(r, max(free.get(r, 0), 0))} available, "
-                                  f"{M.fmt_units(r, need_units)} needed.")
+                                  f"{M.fmt_units(r, need_units)} needed." if reveal else
+                                  f"Alliance-owned {M.LABELS[r]} is not sufficient for this batch.")
             for row in parsed.rows:
                 try:
                     LIM.check(conn, is_self=False, nation_id=None, actor_id=actor, actor_role_ids=role_ids(interaction),
@@ -192,7 +194,8 @@ def register(bulk: app_commands.Group, svc: Services):
         card.add("Payments", f"{len(parsed.rows)} nations · file `{file.filename}`", True)
         card.add("Reason", reason, True)
         card.add("Total", fmt.amounts_with_value(totals, val))
-        card.add("Alliance-owned left afterwards", fmt.amount_lines(M.sub(free, totals)))
+        if reveal:
+            card.add("Alliance-owned left afterwards", fmt.amount_lines(M.sub(free, totals)))
         preview = parsed.rows[:8]
         card.add("First rows", "\n".join(f"**{r.nation_label}** — {fmt.short_amounts(r.amounts)}" for r in preview)
                  + (f"\n…and {len(parsed.rows) - 8} more" if len(parsed.rows) > 8 else ""))
@@ -223,7 +226,7 @@ def register(bulk: app_commands.Group, svc: Services):
         batch_id = await asyncio.to_thread(create)
         if batch_id is None:
             return await reply(interaction, "This file was just sent by someone else. Nothing was repeated.")
-        result = await B.run_batch(svc, batch_id, actor, role_ids(interaction))
+        result = await B.run_batch(svc, batch_id, actor, role_ids(interaction), reveal)
         await show_result(interaction, batch_id, result.get("halted_why") or result.get("error"))
 
     @bulk.command(name="status", description="ECON: results of a bulk transfer (leave empty to list recent ones)")
@@ -261,5 +264,6 @@ def register(bulk: app_commands.Group, svc: Services):
             with svc.db.tx() as conn:
                 B.refresh_items(conn, batch_id)
         await asyncio.to_thread(sync)
-        result = await B.run_batch(svc, batch_id, str(interaction.user.id), role_ids(interaction))
+        result = await B.run_batch(svc, batch_id, str(interaction.user.id), role_ids(interaction),
+                                   has_flag(svc, interaction, "bank_view_alliance_holdings"))
         await show_result(interaction, batch_id, result.get("halted_why") or result.get("error"))

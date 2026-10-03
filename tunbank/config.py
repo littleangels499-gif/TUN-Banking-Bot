@@ -210,6 +210,8 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "tag_loan": ("#loan", "Deposit note that marks a loan repayment"),
     "backup_keep_daily": ("30", "How many daily backups to keep"),
     "opening_import_allowed": ("1", "1 = spreadsheet opening-balance import is allowed"),
+    "tax_alert_channel_id": ("", "Discord channel ID for the one-per-turn tax summary (blank = use the ECON log)"),
+    "tax_alert_settle_seconds": ("180", "Wait this long after the last tax record of a turn before posting its summary"),
     "offshore_access": ("STAFF", "Who may run /bank offshore: STAFF (Bankers+, default), ADMIN, or MEMBERS"),
     "offshore_keep_in_main": ("", "Amounts that must stay in the MAIN bank, e.g. money=100m (blank = none)"),
     "grant_min_level": ("MINISTER", "Lowest staff level that may give a grant: BANKER, MINISTER or ADMIN"),

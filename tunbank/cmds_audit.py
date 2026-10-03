@@ -52,11 +52,11 @@ def register_tax(tax: app_commands.Group, svc: Services):
                                  f"{sum(1 for o in res.outcomes if o.kind in ('TAX',))} new tax record(s).")
 
     # ------------------------------------------------------------ dashboard
-    @tax.command(name="dashboard", description="ECON: taxes collected, top payers and brackets for a period")
+    @tax.command(name="dashboard", description="Confidential: taxes collected, top payers and brackets for a period")
     @app_commands.describe(period="Which period (default: last 30 days)")
     @app_commands.choices(period=PERIOD_CHOICES)
     async def dashboard(interaction: discord.Interaction, period: Optional[app_commands.Choice[str]] = None):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_tax"):
             return
         await thinking(interaction)
         per = pick(period)
@@ -109,7 +109,7 @@ def register_tax(tax: app_commands.Group, svc: Services):
     @app_commands.describe(nation="Leave empty for everyone", period="Which period (default: last 30 days)")
     @app_commands.choices(period=PERIOD_CHOICES)
     async def report(interaction: discord.Interaction, nation: str = "", period: Optional[app_commands.Choice[str]] = None):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_tax"):
             return
         await thinking(interaction)
         nation_id = 0
@@ -135,11 +135,30 @@ def register_tax(tax: app_commands.Group, svc: Services):
     async def paid(interaction: discord.Interaction, nation: str, period: Optional[app_commands.Choice[str]] = None):
         await report.callback(interaction, nation, period)
 
+    # ---------------------------------------------------------------- turns
+    @tax.command(name="turns", description="Confidential: tax collected in each recent 2-hour turn (totals only)")
+    async def turns(interaction: discord.Interaction):
+        if not await need(svc, interaction, "FLAG:bank_view_tax"):
+            return
+        await thinking(interaction)
+        snap = await svc.prices.get()
+        with svc.db.read() as conn:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM tax_turns ORDER BY turn_key DESC LIMIT 48")]
+        lines = []
+        for r in rows:
+            totals = json.loads(r["totals_json"])
+            v = value_amounts(totals, snap)
+            lines.append(f"**{r['turn_key']}:00 UTC** · {fmt.dollars(v.total_cents)}\n-# 💵 {fmt.compact_number(totals.get('money', 0))}"
+                         + (" · " + fmt.short_amounts({k: x for k, x in totals.items() if k != 'money'}) if len(totals) > 1 else ""))
+        await paginate(interaction, chunk_cards(f"{icons.status('tax')} Tax by turn", lines, per_page=8,
+                                                empty="No tax turns recorded yet.",
+                                                intro="Totals only. Member details are in `/tax report` and `/tax export`."))
+
     # -------------------------------------------------------------- profile
     @tax.command(name="profile", description="ECON: one nation's tax bracket, payments and exemption status")
     @app_commands.describe(nation="Member: id, name, link or @user")
     async def profile(interaction: discord.Interaction, nation: str):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_tax"):
             return
         await thinking(interaction)
         nid = await nation_arg(svc, interaction, nation)
@@ -201,7 +220,7 @@ def register_tax(tax: app_commands.Group, svc: Services):
     # ------------------------------------------------------------- brackets
     @tax.command(name="brackets", description="ECON: the alliance's tax brackets, loaded live from Politics & War")
     async def brackets(interaction: discord.Interaction):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_tax"):
             return
         await thinking(interaction)
         warn = None
@@ -263,7 +282,7 @@ def register_tax(tax: app_commands.Group, svc: Services):
     @app_commands.choices(action=EXEMPT_ACTIONS)
     async def exemptions(interaction: discord.Interaction, action: app_commands.Choice[str], nation: str = "",
                          reason: str = "", days: int = 0):
-        level = "AUDITOR" if action.value == "list" else "MINISTER"
+        level = "FLAG:bank_view_tax" if action.value == "list" else "MINISTER"
         if not await need(svc, interaction, level):
             return
         await thinking(interaction)
@@ -303,11 +322,11 @@ def register_tax(tax: app_commands.Group, svc: Services):
         await svc.alerts.econ(card)
 
     # --------------------------------------------------------------- export
-    @tax.command(name="export", description="ECON: Excel workbook of tax collections, per member and per record")
+    @tax.command(name="export", description="Confidential: Excel workbook of tax collections, per member and per record")
     @app_commands.describe(period="Which period (default: all time)")
     @app_commands.choices(period=PERIOD_CHOICES)
     async def export(interaction: discord.Interaction, period: Optional[app_commands.Choice[str]] = None):
-        if not await need(svc, interaction, "AUDITOR"):
+        if not await need(svc, interaction, "FLAG:bank_view_tax"):
             return
         await thinking(interaction)
         per = pick(period, "all")

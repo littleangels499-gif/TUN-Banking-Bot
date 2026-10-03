@@ -13,6 +13,7 @@ from . import alerts as A
 from . import charts as C
 from . import fmt
 from . import icons
+from . import intents as INT
 from . import ledger as L
 from . import money as M
 from . import resolve as RS
@@ -183,11 +184,51 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         return c
 
     async def act_deposit_help(interaction):
+        async def b_plan(i):
+            await open_form(i, "Plan my deposit", [dict(label="What will you deposit?", placeholder="e.g. money=5m coal=2000", max=200)], submit_plan_form)
         await reply(interaction, card=deposit_card(),
-                    view=ActionView(interaction.user.id, [("Check my deposit now", "✅", "success", act_check_deposit)]))
+                    view=ActionView(interaction.user.id, [("Plan my deposit…", "📝", "primary", b_plan),
+                                                          ("Check my deposit now", "✅", "success", act_check_deposit)]))
 
-    @bank.command(name="deposit", description="How to deposit into TUN Bank")
-    async def deposit(interaction: discord.Interaction):
+    async def plan_deposit(interaction, amounts_text: str):
+        """Guided deposit: exact in-game steps for what the member said. Creates NO balance and sends NOTHING."""
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        try:
+            parsed = M.parse_amounts(amounts_text)
+        except M.AmountError as exc:
+            return await reply(interaction, f"I couldn't read those amounts: {exc}")
+        snap = await svc.prices.get()
+        val = value_amounts(parsed, snap)
+
+        def make():
+            with svc.db.tx() as conn:
+                return INT.create(conn, m["nation_id"], parsed)
+        iid = await asyncio.to_thread(make)
+        c = A.Card(f"{icons.status('deposit')} Your deposit plan #{iid}",
+                   "I can't move money out of your nation for you. Only you can deposit, from inside Politics & War. "
+                   "Here are the exact steps. Your balance changes only after the REAL deposit shows up.", A.BLUE)
+        c.add("Deposit exactly", fmt.amounts_with_value(parsed, val))
+        c.add("In game", "Alliance page → **Bank** → **Deposit**. Enter those amounts and leave the **note empty**.\n"
+                         "Use the alliance **TUN** (the main bank), from your own nation.")
+        c.add("After you deposit", "I detect it within a couple of minutes, credit your **Available** balance and DM you. "
+                                   "Or press **Check my deposit now**.")
+        c.add("Why can't the bot do it for me?", "Politics & War only lets a deposit be made by the nation's own login, and a bot key "
+                                                 "is tied to one account. Never give anyone your API key.")
+        c.footer = f"Plan valid for {INT.HOURS} hours · TUN Bank"
+        await reply(interaction, card=c, view=ActionView(interaction.user.id, [("Check my deposit now", "✅", "success", act_check_deposit)]))
+
+    async def submit_plan_form(interaction, amounts):
+        await thinking(interaction)
+        await plan_deposit(interaction, amounts)
+
+    @bank.command(name="deposit", description="Deposit guide: pick what you will deposit and get the exact in-game steps")
+    @app_commands.describe(amounts="What you plan to deposit, e.g. money=5m coal=2000 (leave empty for the general guide)")
+    async def deposit(interaction: discord.Interaction, amounts: str = ""):
+        if amounts.strip():
+            await thinking(interaction)
+            return await plan_deposit(interaction, amounts)
         await act_deposit_help(interaction)
 
     async def act_check_deposit(interaction):
@@ -254,6 +295,9 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         await reply(interaction, card=out, view=ActionView(interaction.user.id, [
             ("My dashboard", "🏦", "primary", act_dashboard), ("Withdraw more", "💸", "secondary", act_withdraw_form)]))
         await svc.alerts.econ(out)
+        if res.internal:
+            await svc.alerts.econ(A.Card(f"{icons.status('warn')} A member withdrawal could not be paid",
+                                         f"{actor_label(interaction)} · nation [#{nid}]\n{res.internal}", A.ORANGE, kind="WITHDRAWAL"))
         await svc.alerts.flush_events()
 
     async def submit_withdraw_form(interaction, amounts, note):
