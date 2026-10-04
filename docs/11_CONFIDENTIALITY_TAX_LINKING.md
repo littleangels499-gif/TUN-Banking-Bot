@@ -32,6 +32,4 @@ in the ECON log. Staff without the treasury permission also get messages that sa
   log and in a permanent link history. A link moves *who may use a nation's deposit*; it never moves money.
 
 ## Depositing
-The bot **cannot** deposit for you. PnW only lets the nation's own login deposit, and a bot key is tied to one account (never share your API key).
-So `/bank deposit amounts:"money=5m coal=2000"` gives you the exact in-game steps (leave the note empty). Nothing is credited, and no plan is
-money: your balance changes only after the real deposit appears in PnW, at which point the bot also marks your plan as matched.
+See docs/12: members can deposit from Discord with their own API key, or follow the guided steps.
