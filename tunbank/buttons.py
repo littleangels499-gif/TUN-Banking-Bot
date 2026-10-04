@@ -49,6 +49,8 @@ class ModalForm(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         values = [str(c.value or "").strip() for c in self.children]
+        from . import configaudit as CA
+        CA.ACTION.set(f"form: {self.title}")
         await _safe(interaction, self._callback(interaction, *values))
 
 
@@ -77,6 +79,8 @@ class ActionView(discord.ui.View):
         async def handler(interaction: discord.Interaction, cb=cb):
             if interaction.user.id != self.user_id:
                 return await interaction.response.send_message("This belongs to someone else.", ephemeral=True)
+            from . import configaudit as CA
+            CA.ACTION.set(f"button: {label}")
             await _safe(interaction, cb(interaction))
         button.callback = handler
         self.handlers[label] = handler

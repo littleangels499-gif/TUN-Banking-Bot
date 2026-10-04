@@ -13,6 +13,7 @@ from . import alerts as A
 from . import charts as C
 from . import fmt
 from . import icons
+from . import credentials as CR
 from . import intents as INT
 from . import ledger as L
 from . import money as M
@@ -65,6 +66,10 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
                     return f"Your Discord account is already linked to nation {other['nation_id']}. Ask ECON to unlink it first."
                 if row and row["discord_id"] and row["discord_id"] != str(interaction.user.id):
                     return "That nation is already linked to a different Discord account. Contact ECON."
+                from . import configaudit as CA
+                CA.record(conn, actor=interaction.user.id, setting="nation_link", previous="unlinked" if not row or not row["discord_id"] else f"<@{row['discord_id']}>",
+                          new=f"<@{interaction.user.id}>", target=f"nation [#{nation_id}] · self-service link, verified against PnW",
+                          category="LINK", only_if_changed=False)
                 L.ensure_member(conn, nation_id, n.get("nation_name"))
                 conn.execute("UPDATE members SET discord_id=?, discord_name=?, linked_at=datetime('now') WHERE nation_id=?",
                              (str(interaction.user.id), interaction.user.name, nation_id))
@@ -184,10 +189,15 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         return c
 
     async def act_deposit_help(interaction):
+        m = _linked(svc, interaction)
+        direct = bool(m and can_direct(m))
+
         async def b_plan(i):
-            await open_form(i, "Plan my deposit", [dict(label="What will you deposit?", placeholder="e.g. money=5m coal=2000", max=200)], submit_plan_form)
+            await open_form(i, "Deposit from Discord" if direct else "Plan my deposit",
+                            [dict(label="What will you deposit?", placeholder="e.g. money=5m coal=2000", max=200)],
+                            submit_direct_form if direct else submit_plan_form)
         await reply(interaction, card=deposit_card(),
-                    view=ActionView(interaction.user.id, [("Plan my deposit…", "📝", "primary", b_plan),
+                    view=ActionView(interaction.user.id, [("Deposit from Discord…" if direct else "Plan my deposit…", "📥" if direct else "📝", "primary", b_plan),
                                                           ("Check my deposit now", "✅", "success", act_check_deposit)]))
 
     async def plan_deposit(interaction, amounts_text: str):
@@ -199,6 +209,8 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
             parsed = M.parse_amounts(amounts_text)
         except M.AmountError as exc:
             return await reply(interaction, f"I couldn't read those amounts: {exc}")
+        if can_direct(m):
+            return await direct_deposit(interaction, m, parsed)
         snap = await svc.prices.get()
         val = value_amounts(parsed, snap)
 
@@ -207,23 +219,128 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
                 return INT.create(conn, m["nation_id"], parsed)
         iid = await asyncio.to_thread(make)
         c = A.Card(f"{icons.status('deposit')} Your deposit plan #{iid}",
-                   "I can't move money out of your nation for you. Only you can deposit, from inside Politics & War. "
-                   "Here are the exact steps. Your balance changes only after the REAL deposit shows up.", A.BLUE)
+                   "Here are the exact steps to deposit from inside Politics & War. "
+                   "Your balance changes only after the REAL deposit shows up.", A.BLUE)
         c.add("Deposit exactly", fmt.amounts_with_value(parsed, val))
         c.add("In game", "Alliance page → **Bank** → **Deposit**. Enter those amounts and leave the **note empty**.\n"
                          "Use the alliance **TUN** (the main bank), from your own nation.")
         c.add("After you deposit", "I detect it within a couple of minutes, credit your **Available** balance and DM you. "
                                    "Or press **Check my deposit now**.")
-        c.add("Why can't the bot do it for me?", "Politics & War only lets a deposit be made by the nation's own login, and a bot key "
-                                                 "is tied to one account. Never give anyone your API key.")
+        c.add("Want the bot to do this for you?", "Save your own API key with `/nation setkey` (needs *Whitelisted access* switched on in your "
+                                                  "PnW account). Then `/bank deposit` starts the deposit from your nation after you confirm. "
+                                                  "The bot can never act for your nation without a key you chose to give it.")
         c.footer = f"Plan valid for {INT.HOURS} hours · TUN Bank"
         await reply(interaction, card=c, view=ActionView(interaction.user.id, [("Check my deposit now", "✅", "success", act_check_deposit)]))
+
+    # ------------------------------------------------ direct deposit from Discord (member's own key)
+    def can_direct(m) -> bool:
+        with svc.db.read() as conn:
+            return bool(svc.deposits and svc.deposits.usable_for(conn, m["nation_id"], m["discord_id"]))
+
+    async def direct_deposit(interaction, m, parsed):
+        nid = m["nation_id"]
+        snap = await svc.prices.get()
+        val = value_amounts(parsed, snap)
+        with svc.db.read() as conn:
+            hint_ = CR.get_row(conn, nid)["key_hint"]
+        card = A.Card(f"{icons.status('deposit')} Confirm deposit from your nation",
+                      "The bot will start this deposit FROM YOUR NATION into the TUN bank, using the API key you saved. "
+                      "It cannot be undone.", A.ORANGE)
+        card.add("From", f"Your nation [#{nid}]", True)
+        card.add("To", "TUN main bank", True)
+        card.add("Amount", fmt.amounts_with_value(parsed, val))
+        card.add("Your key", f"saved key `{hint_}` · never shown or logged", True)
+        card.add("Crediting", "Your TUN balance changes only after PnW's real bank record appears. If PnW refuses, nothing changes.")
+        if not await confirm(svc, interaction, card):
+            return await reply(interaction, "Cancelled. Nothing was sent.")
+        res = await svc.deposits.start(nation_id=nid, discord_id=interaction.user.id, amounts=parsed,
+                                       idem=f"mdep-{interaction.id}", value_cents=val.total_cents, snapshot_id=snap.id if snap else None)
+        await post_outcomes(svc, res.get("outcomes") or [])
+        await svc.alerts.flush_events()
+        ok = res["status"] in ("CREDITED", "SENT")
+        icon = {"CREDITED": "ok", "SENT": "wait", "UNCERTAIN": "warn"}.get(res["status"], "bad")
+        out = A.Card(f"{icons.status(icon)} Deposit {res['status'].title()}", res["message"],
+                     A.GREEN if res["status"] == "CREDITED" else (A.ORANGE if ok or res["status"] == "UNCERTAIN" else A.RED), kind="DEPOSIT")
+        out.add("Amount", fmt.amounts_with_value(parsed, val))
+        if res.get("record_id"):
+            out.add("PnW record", f"#{res['record_id']}", True)
+        if res.get("deposit_id"):
+            out.add("Deposit", f"#{res['deposit_id']}", True)
+        await reply(interaction, card=out, view=ActionView(interaction.user.id, [("My dashboard", "🏦", "primary", act_dashboard),
+                                                                                  ("Check my deposit now", "✅", "secondary", act_check_deposit)]))
+
+    async def submit_direct_form(interaction, amounts):
+        await thinking(interaction)
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        try:
+            parsed = M.parse_amounts(amounts)
+        except M.AmountError as exc:
+            return await reply(interaction, f"I couldn't read those amounts: {exc}")
+        if not can_direct(m):
+            return await reply(interaction, "Direct deposits are not set up for your account. Use `/nation setkey`, or `/bank deposit` for the manual steps.")
+        await direct_deposit(interaction, m, parsed)
 
     async def submit_plan_form(interaction, amounts):
         await thinking(interaction)
         await plan_deposit(interaction, amounts)
 
-    @bank.command(name="deposit", description="Deposit guide: pick what you will deposit and get the exact in-game steps")
+    # ----------------------------------------------------------- the member's own API key
+    async def submit_key(interaction, api_key):
+        await thinking(interaction)
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        api_key = api_key.strip()
+        CR.register_secret(api_key)
+        if not CR.KEY_RE.match(api_key):
+            return await reply(interaction, "That doesn't look like a PnW API key (letters and numbers only). Nothing was saved.")
+        try:
+            owner = await svc.pnw.fetch_key_owner(api_key)
+        except (PnWRejected, PnWUncertain) as exc:
+            return await reply(interaction, f"PnW didn't accept that key, so it was not saved: {CR.redact(exc)}")
+        if owner is not None and owner != m["nation_id"]:
+            return await reply(interaction, f"{icons.status('bad')} That key belongs to a different nation. A key can only be saved for **your own** nation. Nothing was saved.")
+
+        def store():
+            with svc.db.tx() as conn:
+                CR.save(conn, svc.crypto, nation_id=m["nation_id"], discord_id=str(interaction.user.id), api_key=api_key, verified=owner is not None)
+        try:
+            await asyncio.to_thread(store)
+        except CR.CredentialError as exc:
+            return await reply(interaction, str(exc))
+        c = A.Card(f"{icons.status('ok')} Your API key is saved", "Stored encrypted. The bot never shows it and never writes it to logs.", A.GREEN)
+        c.add("Key", f"`{CR.hint(api_key)}`", True)
+        c.add("Checked against PnW", "yes, it is your nation's key" if owner is not None else "PnW can't tell the bot who owns a key; it is checked on your first deposit", True)
+        c.add("Do this once in Politics & War", "Open your **Account** page and switch **Whitelisted access** ON. Without it PnW refuses deposits started by a bot.")
+        c.add("How it is used", "Only when YOU run `/bank deposit` and press **Confirm**, and only to deposit from your own nation into the TUN bank. "
+                                "Remove it any time with `/nation removekey`. If you ever think the key leaked, make a new one in PnW.")
+        await reply(interaction, card=c)
+
+    @nation.command(name="setkey", description="Let TUN Bank start deposits from YOUR nation with your own PnW API key")
+    async def setkey(interaction: discord.Interaction):
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        if not (svc.deposits and svc.deposits.available()):
+            return await reply(interaction, "Direct deposits are not switched on for this bot. You can still use `/bank deposit` for the exact manual steps.")
+        await open_form(interaction, "Your PnW API key", [dict(label="Paste your API key (it is hidden from everyone)", placeholder="your PnW API key", max=64)], submit_key)
+
+    @nation.command(name="removekey", description="Delete the API key you saved with TUN Bank")
+    async def removekey(interaction: discord.Interaction):
+        await thinking(interaction)
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+
+        def do():
+            with svc.db.tx() as conn:
+                return CR.remove(conn, m["nation_id"], str(interaction.user.id), "removed by the member")
+        removed = await asyncio.to_thread(do)
+        await reply(interaction, "Your saved API key was deleted." if removed else "You had no saved API key.")
+
+    @bank.command(name="deposit", description="Deposit: start it from Discord (with your own API key) or get the exact in-game steps")
     @app_commands.describe(amounts="What you plan to deposit, e.g. money=5m coal=2000 (leave empty for the general guide)")
     async def deposit(interaction: discord.Interaction, amounts: str = ""):
         if amounts.strip():

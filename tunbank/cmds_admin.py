@@ -10,6 +10,8 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import configaudit as CA
+from . import credentials as CR
 from . import exports as X
 from . import fmt
 from . import icons
@@ -55,6 +57,9 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             with svc.db.tx() as conn:
                 if not L.get_member(conn, nation_id):
                     return False
+                old = L.get_member(conn, nation_id)
+                CA.record(conn, actor=uid(interaction), setting="account_frozen", previous="frozen" if old["frozen"] else "active", new="frozen",
+                          target=f"nation [#{nation_id}] · {reason}", category="SECURITY")
                 conn.execute("UPDATE members SET frozen=1, frozen_reason=? WHERE nation_id=?", (reason, nation_id))
                 L.audit(conn, uid(interaction), "ACCOUNT_FROZEN", f"nation:{nation_id}", {"reason": reason})
                 return True
@@ -71,6 +76,9 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             return
         def do():
             with svc.db.tx() as conn:
+                old = L.get_member(conn, nation_id)
+                CA.record(conn, actor=uid(interaction), setting="account_frozen", previous="frozen" if old and old["frozen"] else "active", new="active",
+                          target=f"nation [#{nation_id}] · {reason}", category="SECURITY")
                 conn.execute("UPDATE members SET frozen=0, frozen_reason=NULL WHERE nation_id=?", (nation_id,))
                 L.audit(conn, uid(interaction), "ACCOUNT_UNFROZEN", f"nation:{nation_id}", {"reason": reason})
         await asyncio.to_thread(do)
@@ -83,6 +91,8 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             return
         def do():
             with svc.db.tx() as conn:
+                CA.record(conn, actor=uid(interaction), setting="withdrawals_paused", previous="no" if L.get_state(conn, "bank_paused") != "1" else "yes",
+                          new="yes", target=reason, category="SECURITY")
                 L.set_state(conn, "bank_paused", "1")
                 L.audit(conn, uid(interaction), "BANK_PAUSED", None, {"reason": reason})
         await asyncio.to_thread(do)
@@ -95,6 +105,8 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             return
         def do():
             with svc.db.tx() as conn:
+                CA.record(conn, actor=uid(interaction), setting="withdrawals_paused", previous="yes" if L.get_state(conn, "bank_paused") == "1" else "no",
+                          new="no", target=reason, category="SECURITY")
                 L.set_state(conn, "bank_paused", "0")
                 L.audit(conn, uid(interaction), "BANK_RESUMED", None, {"reason": reason})
         await asyncio.to_thread(do)
@@ -313,6 +325,8 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             return
         def do():
             with svc.db.tx() as conn:
+                CA.record(conn, actor=uid(interaction), setting="banker_access", previous="no",
+                          new="yes", target=f"user <@{user.id}>", category="PERMISSION")
                 conn.execute("INSERT OR IGNORE INTO bankers(discord_id,added_by,added_at) VALUES(?,?,datetime('now'))",
                              (str(user.id), uid(interaction)))
                 L.audit(conn, uid(interaction), "BANKER_ADDED", f"user:{user.id}", {})
@@ -325,6 +339,8 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             return
         def do():
             with svc.db.tx() as conn:
+                CA.record(conn, actor=uid(interaction), setting="banker_access", previous="yes",
+                          new="no", target=f"user <@{user.id}>", category="PERMISSION")
                 conn.execute("DELETE FROM bankers WHERE discord_id=?", (str(user.id),))
                 L.audit(conn, uid(interaction), "BANKER_REMOVED", f"user:{user.id}", {})
         await asyncio.to_thread(do)
@@ -347,13 +363,14 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             return
         def do():
             with svc.db.tx() as conn:
-                perms.set_role(conn, level.value, str(role.id), add=not remove)
+                perms.set_role(conn, level.value, str(role.id), add=not remove, actor=uid(interaction))
                 L.audit(conn, uid(interaction), "ROLE_PERMISSION", f"role:{role.id}", {"level": level.value, "remove": remove})
         await asyncio.to_thread(do)
         await reply(interaction, f"{role.mention} {'no longer has' if remove else 'now has'} **{level.value}**.")
 
     CHANNEL_KINDS = [app_commands.Choice(name="ECON log (financial alerts)", value="econ_log_channel_id"),
-                     app_commands.Choice(name="Tax alerts (one summary per turn)", value="tax_alert_channel_id")]
+                     app_commands.Choice(name="Tax alerts (one summary per turn)", value="tax_alert_channel_id"),
+                     app_commands.Choice(name="Configuration audit (private)", value="config_audit_channel_id")]
 
     @bankset.command(name="setlogchannel", description="Admin: set the ECON log channel or the tax-alert channel")
     @app_commands.describe(channel="The channel (keep it private)", kind="Which feed this channel receives (default: ECON log)")
@@ -369,11 +386,13 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 cfg_set(conn, key, str(channel.id), uid(interaction))
                 L.audit(conn, uid(interaction), "CONFIG_CHANGED", key, {"value": channel.id})
         await asyncio.to_thread(do)
-        label = "Tax alert" if key == "tax_alert_channel_id" else "ECON log"
+        label = {"tax_alert_channel_id": "Tax alert", "config_audit_channel_id": "Configuration audit"}.get(key, "ECON log")
         await reply(interaction, f"{label} channel set to {channel.mention}. Discord decides who can read it, so keep it private.")
         card = A.Card(f"{label} channel connected", "Alerts will appear here.", A.GREEN)
         if key == "tax_alert_channel_id":
             await svc.alerts.tax(card)
+        elif key == "config_audit_channel_id":
+            await svc.alerts.flush_config_audit()         # queued entries are posted now
         else:
             await svc.alerts.econ(card)
 
@@ -389,7 +408,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
 
         def do():
             with svc.db.tx() as conn:
-                perms.set_flag_role(conn, permission.value, str(role.id), add=not remove)
+                perms.set_flag_role(conn, permission.value, str(role.id), add=not remove, actor=uid(interaction))
                 L.audit(conn, uid(interaction), "ACCESS_FLAG", permission.value, {"role": str(role.id), "remove": remove})
         await asyncio.to_thread(do)
         await reply(interaction, f"{role.mention} {'no longer has' if remove else 'now has'} `{permission.value}`.")
@@ -465,10 +484,15 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         def do():
             with svc.db.tx() as conn:
                 L.ensure_member(conn, nid, (info or {}).get("nation_name"))
+                CA.record(conn, actor=actor, setting="nation_link", previous=(f"<@{owner}>" if owner else "unlinked"), new=f"<@{member.id}>",
+                          target=f"nation [#{nid}]" + (f" · member was on nation [#{other_nation}]" if other_nation else "") +
+                                 ("" if verified else " · PnW's Discord field did not match"), category="LINK", only_if_changed=False)
                 if owner:
                     conn.execute("UPDATE members SET discord_id=NULL, discord_name=NULL WHERE nation_id=?", (nid,))
+                    CR.remove(conn, nid, actor, "nation relinked: the previous owner's saved API key was deleted")
                 if other_nation:
                     conn.execute("UPDATE members SET discord_id=NULL, discord_name=NULL WHERE nation_id=?", (other_nation,))
+                    CR.remove(conn, other_nation, actor, "member moved to another nation: the saved API key was deleted")
                     conn.execute("INSERT INTO nation_link_history(nation_id,discord_id,previous_discord_id,action,actor,verified,note,at) "
                                  "VALUES(?,?,?,?,?,?,?,?)", (other_nation, None, str(member.id), "UNLINKED_BY_RELINK", actor, int(verified), f"moved to nation {nid}", B_now()))
                 conn.execute("UPDATE members SET discord_id=?, discord_name=?, linked_at=datetime('now') WHERE nation_id=?",
@@ -544,7 +568,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
     @app_commands.choices(kind=[app_commands.Choice(name=k, value=k) for k in X.KINDS])
     async def records(interaction: discord.Interaction, kind: app_commands.Choice[str]):
         # alliance-wide money needs its own permission; member-level exports need only staff access
-        required = {"vault": "FLAG:bank_view_alliance_holdings", "offshore": "FLAG:bank_view_alliance_holdings",
+        required = {"configaudit": "ADMIN", "vault": "FLAG:bank_view_alliance_holdings", "offshore": "FLAG:bank_view_alliance_holdings",
                     "grants": "FLAG:bank_view_alliance_holdings", "tax": "FLAG:bank_view_tax"}.get(kind.value, "AUDITOR")
         if not await need(svc, interaction, required):
             return

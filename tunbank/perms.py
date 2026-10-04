@@ -65,9 +65,13 @@ def can_read_finance(levels: set) -> bool:
     return bool(levels)  # any staff level may read ECON financial views
 
 
-def set_role(conn, level: str, role_id: str, add: bool):
+def set_role(conn, level: str, role_id: str, add: bool, actor="system"):
     if level not in ORDER:
         raise ValueError("level must be AUDITOR, BANKER, MINISTER or ADMIN")
+    from . import configaudit as CA
+    had = bool(conn.execute("SELECT 1 FROM role_permissions WHERE level=? AND role_id=?", (level, str(role_id))).fetchone())
+    CA.record(conn, actor=actor, setting=f"role_permission:{level}", previous="granted" if had else "not granted",
+              new="not granted" if not add else "granted", target=f"role <@&{role_id}>", category="PERMISSION")
     if add:
         conn.execute("INSERT OR IGNORE INTO role_permissions(level, role_id) VALUES(?,?)",
                      (level, str(role_id)))
@@ -79,9 +83,13 @@ def list_roles(conn):
     return conn.execute("SELECT level, role_id FROM role_permissions ORDER BY level, role_id").fetchall()
 
 
-def set_flag_role(conn, flag: str, role_id: str, add: bool):
+def set_flag_role(conn, flag: str, role_id: str, add: bool, actor="system"):
     if flag not in FLAGS:
         raise ValueError("unknown permission")
+    from . import configaudit as CA
+    had = bool(conn.execute("SELECT 1 FROM role_flags WHERE flag=? AND role_id=?", (flag, str(role_id))).fetchone())
+    CA.record(conn, actor=actor, setting=f"confidential_access:{flag}", previous="granted" if had else "not granted",
+              new="granted" if add else "not granted", target=f"role <@&{role_id}>", category="PERMISSION")
     if add:
         conn.execute("INSERT OR IGNORE INTO role_flags(flag, role_id) VALUES(?,?)", (flag, str(role_id)))
     else:

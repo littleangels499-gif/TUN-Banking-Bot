@@ -71,6 +71,10 @@ def register(bankset: app_commands.Group, svc: Services):
 
         def note():
             with svc.db.tx() as conn:
+                from . import configaudit as CA
+                CA.record(conn, actor=interaction.user.id, setting="database_restore", previous="current database",
+                          new=f"backup staged ({info['ledger_entries']} ledger entries); applies at next restart", target=file.filename,
+                          category="RESTORE", only_if_changed=False)
                 L.audit(conn, interaction.user.id, "RESTORE_STAGED", file.filename, info)
         await asyncio.to_thread(note)
         await svc.alerts.econ(A.Card("Database restore STAGED", f"By {actor_label(interaction)}. Applies at next restart.", A.RED))

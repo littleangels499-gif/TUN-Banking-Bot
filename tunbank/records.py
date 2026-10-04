@@ -37,6 +37,7 @@ class Outcome:
     tx_id: int | None = None
     new_events: list = field(default_factory=list)
     intent: int | None = None
+    member_deposit: int | None = None
 
 
 def _banks(ctx: "Ctx") -> set:
@@ -55,20 +56,33 @@ def _direction(n: dict, ctx: "Ctx") -> str:
 
 
 def classify_inbound(conn, n: dict, ctx: Ctx) -> tuple[str, str, int | None, str]:
-    """-> (classification, status, credited_nation_id, reason). Never credits by itself."""
+    """-> (classification, status, credited_nation_id, reason). Never credits by itself.
+
+    THE RULE for money arriving at the main bank from a member nation:
+        #loan      -> loan repayment            (explicit exception)
+        #ignore    -> alliance-owned donation   (explicit exception)
+        anything else (no note, #deposit, "my savings", "warchest money", ...) -> NORMAL MEMBER DEPOSIT
+    Only a record that PnW itself identifies as a system/tax record (a PnW tax id), or a tag an Admin has listed in
+    `system_tags`, is not a member deposit. A different note never leaves a member's deposit unclassified.
+    """
     tags = B.note_tags(n["note"])
     ignore_tag = cfg_get(conn, "tag_ignore").lower()
     loan_tag = cfg_get(conn, "tag_loan").lower()
+    system_tags = {t.strip().lower() for t in cfg_get(conn, "system_tags").replace(";", ",").split(",") if t.strip()}
     if n["sender_type"] != 1:
         return "REVIEW", "AWAITING_REVIEW", None, "sender is not a nation"
-    if n["tax_id"]:
+    if n["tax_id"]:                                   # positively identified by PnW as a tax collection
         return "TAX", "NO_CREDIT", n["sender_id"], "PnW tax collection"
-    if ignore_tag in tags:
-        return "ALLIANCE_DONATION", "NO_CREDIT", n["sender_id"], "#ignore donation"
-    if any(t == loan_tag or (t.startswith(loan_tag + "-") and "disburse" not in t) for t in tags):
+    if tags & system_tags:                            # explicitly configured system type
+        return "OTHER", "NO_CREDIT", n["sender_id"], "configured system tag: " + ", ".join(sorted(tags & system_tags))
+    is_ignore, is_loan = ignore_tag in tags, loan_tag in tags
+    if is_ignore and is_loan:
+        return "REVIEW", "AWAITING_REVIEW", None, f"note has both {ignore_tag} and {loan_tag}"
+    if is_ignore:
+        return "ALLIANCE_DONATION", "NO_CREDIT", n["sender_id"], f"{ignore_tag} donation"
+    if is_loan:
         return "LOAN_REPAYMENT", "NO_CREDIT", n["sender_id"], "loan repayment"
-    if tags:
-        return "REVIEW", "AWAITING_REVIEW", None, f"unrecognised note tag(s): {', '.join(sorted(tags))}"
+    # everything else from a member is that member's normal deposit
     if cfg_bool(conn, "require_alliance_member_deposit"):
         if ctx.members is None:
             return "REVIEW", "AWAITING_REVIEW", None, "alliance member list unavailable"
@@ -147,6 +161,7 @@ def process_record(conn, rec: dict, ctx: Ctx) -> Outcome:
                                actor="system:scanner", snapshot_id=ctx.snapshot_id, note=n["note"])
         out.kind, out.before, out.after, out.nation_id = "CREDIT", res["before"], res["after"], nation
         out.intent = INT.match(conn, nation, n["amounts"], n["id"])
+        _match_member_deposit(conn, n, nation, out)
         _flag_large(conn, n, ctx, out)
         return out
 
@@ -162,6 +177,22 @@ def process_record(conn, rec: dict, ctx: Ctx) -> Outcome:
     else:
         out.kind = "REVIEW"
     return out
+
+
+def _match_member_deposit(conn, n: dict, nation: int, out: "Outcome") -> None:
+    """A deposit the member started from Discord carries TUN-DEP<id>. When its REAL record is credited, link them."""
+    from .memberdeposit import dep_tag
+
+    tid = dep_tag(n["note"])
+    if not tid:
+        return
+    row = conn.execute("SELECT * FROM member_deposits WHERE id=?", (tid,)).fetchone()
+    if row and row["nation_id"] == nation and row["status"] in ("PENDING", "SENT", "UNCERTAIN"):
+        conn.execute("UPDATE member_deposits SET status='CREDITED', pnw_record_id=?, credited_at=?, updated_at=?, failure_reason=NULL WHERE id=?",
+                     (n["id"], now_iso(), now_iso(), tid))
+        conn.execute("UPDATE integrity_events SET status='RESOLVED', resolved_by='system', resolved_at=?, resolution_note=? "
+                     "WHERE status='OPEN' AND dedupe_key=?", (now_iso(), f"Credited from PnW record #{n['id']}", f"member-deposit-uncertain:{tid}"))
+        out.member_deposit = tid
 
 
 def _process_offshore_transfer(conn, n: dict, ctx: Ctx) -> Outcome:
@@ -389,6 +420,11 @@ def resolve_review(conn, *, record_id: int, action: str, actor: str, note: str,
         "UPDATE integrity_events SET status='RESOLVED', resolved_by=?, resolved_at=?, "
         "resolution_note=? WHERE status='OPEN' AND ref_type='pnw_record' AND ref_id=?",
         (str(actor), now_iso(), f"Reviewed ({action}): {note}", str(record_id)))
+    from . import configaudit as CA
+    CA.record(conn, actor=actor, setting="record_classification", previous=f"{rec['classification']} / {rec['status']}",
+              new={"credit": "member deposit (credited)", "alliance": "alliance money (no credit)", "dismiss": "dismissed"}[action],
+              target=f"PnW record #{record_id}" + (f" → nation [#{nation_id}]" if nation_id else "") + f" · {note}",
+              category="CLASSIFICATION", only_if_changed=False)
     L.audit(conn, actor, "RECORD_REVIEWED", f"pnw:{record_id}",
             {"action": action, "nation_id": nation_id, "note": note})
     return out

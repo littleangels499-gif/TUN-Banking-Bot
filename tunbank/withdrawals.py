@@ -259,6 +259,9 @@ class WithdrawalService:
                     raise L.LedgerError("Wait at least 5 minutes after the attempt before marking it failed.")
                 if not L.fail_tx(conn, tx_id, f"Marked failed by staff after checking PnW records ({actor})"):
                     raise L.LedgerError("Could not mark failed (a PnW record exists for it).")
+                from . import configaudit as CA
+                CA.record(conn, actor=actor, setting="transaction_status", previous=tx["status"], new="FAILED",
+                          target=f"transaction #{tx_id} marked failed by staff after checking PnW", category="CLASSIFICATION", only_if_changed=False)
                 L.audit(conn, actor, "TX_MARKED_FAILED", f"tx:{tx_id}", {})
             return "ok"
 

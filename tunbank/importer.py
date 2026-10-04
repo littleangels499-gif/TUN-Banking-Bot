@@ -251,6 +251,10 @@ def commit(conn, p: Preview, *, admin_id: str, note: str, snapshot_id) -> dict:
              batch_id=batch_id, actor=admin_id, note=f"Opening balance import #{batch_id}",
              price_snapshot_id=snapshot_id)
         for n, r, u in p.rows])
+    from . import configaudit as CA
+    CA.record(conn, actor=admin_id, setting="opening_balance_import", previous="—",
+              new=f"batch #{batch_id}: {len(p.rows)} amounts for {len(p.nations)} nations", target=f"{p.filename} · {note}",
+              category="IMPORT", only_if_changed=False)
     L.audit(conn, admin_id, "OPENING_IMPORT", f"batch:{batch_id}", {
         "filename": p.filename, "sha256": p.file_sha256, "rows": len(p.rows), "totals": p.totals,
         "note": note})

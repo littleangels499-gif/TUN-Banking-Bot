@@ -8,7 +8,7 @@ from . import money as M
 from . import reconcile as R
 from .valuation import value_amounts
 
-KINDS = ("balances", "ledger", "deposits", "withdrawals", "locks", "tax", "audit", "integrity", "vault", "offshore", "grants")
+KINDS = ("balances", "ledger", "deposits", "withdrawals", "locks", "tax", "audit", "integrity", "vault", "offshore", "grants", "configaudit")
 
 
 def _safe(v):
@@ -127,6 +127,11 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
                 for r in conn.execute("SELECT * FROM grants ORDER BY id")]
         _sheet(wb, "Grants", ["ID", "Date", "Recipient", "Purpose", "Project", "Requested by", "Approver", "Status",
                               "Value $ at time", "Tx", "PnW record", "Amounts (units/100)"], rows)
+    elif kind == "configaudit":
+        rows = [[r["id"], r["ts"], r["actor_id"], r["action"], r["category"], r["setting"], r["previous"], r["new"], r["target"],
+                 "yes" if r["posted_at"] else "no"] for r in conn.execute("SELECT * FROM config_audit ORDER BY id")]
+        _sheet(wb, "Configuration audit", ["ID", "Time (UTC)", "Discord ID", "Action", "Category", "Setting", "Previous", "New",
+                                           "Affected", "Posted to channel"], rows)
     elif kind == "audit":
         rows = [[r["id"], r["ts"], r["actor"], r["action"], r["target"], r["details_json"]]
                 for r in conn.execute("SELECT * FROM audit_log ORDER BY id")]

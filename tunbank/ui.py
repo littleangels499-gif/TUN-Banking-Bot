@@ -26,6 +26,8 @@ class Services:
     alerts: object
     actions: dict = field(default_factory=dict)   # command callbacks that buttons can trigger
     offshore: object = None
+    crypto: object = None
+    deposits: object = None
 
 
 def actor_label(interaction: discord.Interaction) -> str:
@@ -52,6 +54,8 @@ def has_flag(svc: Services, interaction: discord.Interaction, flag: str) -> bool
 
 async def need(svc: Services, interaction: discord.Interaction, level: str) -> bool:
     """True if allowed. Otherwise answers the user privately and returns False."""
+    from . import configaudit as CA
+    CA.ACTION.set(CA.label_for(interaction))
     if perms.has(levels(svc, interaction), level):
         return True
     if level.startswith("FLAG:"):

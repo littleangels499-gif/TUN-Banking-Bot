@@ -243,6 +243,44 @@ class AlertService:
                              (now_iso(), val.total_cents, snap.id if snap else None, r["turn_key"]))
                 L.audit(conn, "system", "TAX_TURN_ALERTED", f"turn:{r['turn_key']}", {"records": r["records"]})
 
+    async def config_audit(self, card: Card) -> bool:
+        """Post to the private configuration-audit channel. Returns True when it was delivered."""
+        with self.db.read() as conn:
+            chan = cfg_get(conn, "config_audit_channel_id")
+        if not (self.bot and chan.isdigit()):
+            return False
+        try:
+            ch = self.bot.get_channel(int(chan)) or await self.bot.fetch_channel(int(chan))
+            await ch.send(embed=to_embed(card))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.warning("config audit post failed: %s", exc)
+            return False
+
+    async def flush_config_audit(self):
+        """Every recorded change reaches the audit channel. Anything that could not be posted stays queued and is retried."""
+        from . import configaudit as CA
+
+        with self.db.read() as conn:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM config_audit WHERE posted_at IS NULL ORDER BY id LIMIT 40")]
+            channel_set = cfg_get(conn, "config_audit_channel_id").isdigit()
+        if not rows:
+            return
+        if not channel_set:
+            if not getattr(self, "_warned_no_audit_channel", False):
+                self._warned_no_audit_channel = True
+                await self.econ(Card("⚠️ Configuration audit channel not set",
+                                     "Changes are being recorded permanently in the database, but there is no private channel for them yet. "
+                                     "An Admin should run `/bankset setlogchannel kind:Configuration audit`. Past entries will be posted then.", ORANGE))
+            return
+        for r in rows:
+            ok = await self.config_audit(CA.card_for(r))
+            with self.db.tx() as conn:
+                conn.execute("UPDATE config_audit SET posted_at=?, post_error=? WHERE id=?",
+                             (now_iso() if ok else None, None if ok else "could not post; will retry", r["id"]))
+            if not ok:
+                break
+
     async def econ(self, card: Card, channel_id=None):
         with self.db.read() as conn:
             chan_id = channel_id or cfg_get(conn, "econ_log_channel_id")
@@ -284,6 +322,7 @@ class AlertService:
     async def flush_events(self):
         """Alert ECON about every integrity event exactly once (tracked by event id)."""
         from . import ledger as L
+        await self.flush_config_audit()
 
         def load():
             with self.db.read() as conn:

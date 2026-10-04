@@ -136,10 +136,15 @@ def resolve_event(conn, event_id: int, actor: str, note: str) -> bool:
     )
     if cur.rowcount:
         audit(conn, actor, "INTEGRITY_EVENT_RESOLVED", f"event:{event_id}", {"note": note})
+        from . import configaudit as CA
+        CA.record(conn, actor=actor, setting=f"integrity_event:{event_id}", previous="OPEN", new="RESOLVED", target=note, category="SECURITY")
     return bool(cur.rowcount)
 
 
 def set_emergency_lock(conn, on: bool, reason: str, actor: str):
+    from . import configaudit as CA
+    CA.record(conn, actor=actor, setting="emergency_financial_lock", previous="ON" if get_state(conn, "emergency_lock") == "1" else "OFF",
+              new="ON" if on else "OFF", target=reason or None, category="SECURITY")
     set_state(conn, "emergency_lock", "1" if on else "0")
     set_state(conn, "emergency_reason", reason if on else "")
     audit(conn, actor, "EMERGENCY_LOCK_ON" if on else "EMERGENCY_LOCK_OFF", None, {"reason": reason})
@@ -673,6 +678,10 @@ def apply_adjustment(conn, *, nation_id: int, deltas: dict, reason: str, evidenc
              note=f"{reason} | evidence: {evidence}", price_snapshot_id=snapshot_id)
         for res, d in deltas.items()
     ])
+    from . import configaudit as CA
+    CA.record(conn, actor=actor, setting="balance_adjustment", previous=CA.amounts_text(before["available"]),
+              new=CA.amounts_text(snapshot_accounts(conn, nation_id)["available"]),
+              target=f"nation [#{nation_id}] · reason: {reason} · evidence: {evidence}", category="ACCOUNTING", only_if_changed=False)
     audit(conn, actor, "ADJUSTMENT_APPLIED", f"adjustment:{adj_id}", {
         "nation_id": nation_id, "deltas": deltas, "reason": reason, "evidence": evidence,
         "approval_id": approval_id})

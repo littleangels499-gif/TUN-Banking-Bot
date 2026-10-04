@@ -51,6 +51,7 @@ class Settings:
     main_bot_api_key: str = ""
     offshore_nation_id: int | None = None
     alliance_receiver_type: int = 2             # PnW receiver_type for "an alliance" (1 = nation)
+    credential_key: str = ""                    # Fernet key that encrypts members' API keys (CREDENTIAL_ENCRYPTION_KEY)
 
     @property
     def main(self) -> BankAccess:
@@ -66,6 +67,11 @@ class Settings:
     @property
     def bank_ids(self) -> set:
         return {b.alliance_id for b in self.banks}
+
+    @property
+    def deposit_bot_key(self) -> str | None:
+        """The verified bot key used to start a deposit on a member's behalf (with THEIR api key)."""
+        return self.main.bot_key or (self.offshore.bot_key if self.offshore else None)
 
     @property
     def payout(self) -> BankAccess:
@@ -182,6 +188,7 @@ def load_settings() -> Settings:
         main_bot_api_key=opt("MAIN_BOT_API_KEY"),
         offshore_nation_id=int(nation) if nation.isdigit() else None,
         alliance_receiver_type=int(opt("ALLIANCE_RECEIVER_TYPE") or 2),
+        credential_key=opt("CREDENTIAL_ENCRYPTION_KEY"),
     )
 
 
@@ -208,8 +215,11 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "approval_expiry_minutes": ("60", "How long an approval request stays open"),
     "tag_ignore": ("#ignore", "Deposit note that marks an alliance donation"),
     "tag_loan": ("#loan", "Deposit note that marks a loan repayment"),
+    "system_tags": ("", "Comma-separated notes that mark a SYSTEM transaction, not a member deposit (blank = none)"),
     "backup_keep_daily": ("30", "How many daily backups to keep"),
     "opening_import_allowed": ("1", "1 = spreadsheet opening-balance import is allowed"),
+    "config_audit_channel_id": ("", "Discord channel ID for the private configuration/security audit log"),
+    "member_deposit_enabled": ("1", "1 = members who linked their own API key may start deposits from Discord"),
     "tax_alert_channel_id": ("", "Discord channel ID for the one-per-turn tax summary (blank = use the ECON log)"),
     "tax_alert_settle_seconds": ("180", "Wait this long after the last tax record of a turn before posting its summary"),
     "offshore_access": ("STAFF", "Who may run /bank offshore: STAFF (Bankers+, default), ADMIN, or MEMBERS"),
@@ -253,6 +263,10 @@ def cfg_bool(conn, key: str) -> bool:
 def cfg_set(conn, key: str, value: str, actor: str):
     if key not in DEFAULTS:
         raise KeyError(key)
+    from . import configaudit as CA
+
+    previous = cfg_get(conn, key)
+    CA.record(conn, actor=actor, setting=key, previous=previous, new=str(value), category=CA.category_for_setting(key))
     conn.execute(
         "INSERT INTO bank_config(key,value,updated_at,updated_by) VALUES(?,?,?,?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "

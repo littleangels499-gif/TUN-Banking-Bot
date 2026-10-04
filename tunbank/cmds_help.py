@@ -32,7 +32,7 @@ CATEGORIES = {
 # ---- every command: "path" -> (category, minimum level)
 CATALOG = {
     # account
-    "nation link": ("account", "ALL"), "bank dashboard": ("account", "ALL"), "bank balance": ("account", "ALL"),
+    "nation link": ("account", "ALL"), "nation setkey": ("account", "ALL"), "nation removekey": ("account", "ALL"), "bank dashboard": ("account", "ALL"), "bank balance": ("account", "ALL"),
     "bank deposit": ("account", "ALL"), "bank withdrawself": ("account", "ALL"), "bank history": ("account", "ALL"),
     "chart mybalance": ("account", "ALL"), "chart mytrend": ("account", "ALL"),
     "prices": ("account", "ALL"), "help": ("account", "ALL"),
@@ -54,7 +54,7 @@ CATALOG = {
     # audit & security
     "bank reconcile": ("audit", "AUDITOR"), "bank approvals": ("audit", "AUDITOR"), "bank approve": ("audit", "MINISTER"),
     "bank revoke": ("audit", "MINISTER"), "audit transactions": ("audit", "AUDITOR"), "audit stafflog": ("audit", "AUDITOR"),
-    "audit nation": ("audit", "AUDITOR"), "audit run": ("audit", "AUDITOR"), "ledger reconcile": ("audit", "AUDITOR"),
+    "audit nation": ("audit", "AUDITOR"), "audit run": ("audit", "AUDITOR"), "audit configlog": ("audit", "ADMIN"), "ledger reconcile": ("audit", "AUDITOR"),
     "ledger dashboard": ("audit", "AUDITOR"), "ledger emergencylock": ("audit", "MINISTER"), "ledger resolve": ("audit", "ADMIN"),
     # charts (staff)
     "chart nation": ("charts", "AUDITOR"), "chart vault": ("charts", "FLAG:bank_view_alliance_holdings"), "chart members": ("charts", "FLAG:bank_view_alliance_holdings"),

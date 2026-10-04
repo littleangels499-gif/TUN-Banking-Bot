@@ -12,6 +12,8 @@ from discord.ext import commands, tasks
 from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_grant, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
 from . import ledger as L
 from .alerts import AlertService
+from .credentials import Crypto
+from .memberdeposit import MemberDepositService
 from .offshore import OffshoreService
 from .config import cfg_int
 from .db import Database, prune_backups
@@ -38,6 +40,8 @@ class TunBankBot(commands.Bot):
                             alerts=AlertService(db))
         self.svc.alerts.bot = self
         self.svc.offshore = OffshoreService(db, pnw, prices, settings)
+        self.svc.crypto = Crypto(settings.credential_key)
+        self.svc.deposits = MemberDepositService(db, pnw, prices, settings, self.svc.crypto, self.svc.scanner)
         self._ready_once = False
 
     async def setup_hook(self):
@@ -108,6 +112,15 @@ class TunBankBot(commands.Bot):
         except Exception:  # noqa: BLE001
             log.exception("startup recovery failed")
         try:
+            from . import configaudit as CA
+            with self.db.tx() as conn:
+                changed = CA.check_env_changes(conn, self.settings)
+            if changed:
+                log.warning("%s startup setting(s) changed since the last start; recorded in the audit log", changed)
+            await self.svc.alerts.flush_config_audit()
+        except Exception:  # noqa: BLE001
+            log.exception("startup configuration check failed")
+        try:
             from .records import backfill_tax_turns
             with self.db.tx() as conn:
                 n = backfill_tax_turns(conn)
@@ -118,9 +131,10 @@ class TunBankBot(commands.Bot):
         self.scan_loop.start()
         self.recon_loop.start()
         self.backup_loop.start()
+        self.audit_loop.start()
 
     async def close(self):
-        for t in (self.scan_loop, self.recon_loop, self.backup_loop):
+        for t in (self.scan_loop, self.recon_loop, self.backup_loop, self.audit_loop):
             t.cancel()
         await self.svc.pnw.close()
         self.db.close()
@@ -161,6 +175,14 @@ class TunBankBot(commands.Bot):
         except Exception:  # noqa: BLE001
             log.exception("reconcile loop error")
 
+    @tasks.loop(seconds=20)
+    async def audit_loop(self):
+        """Nothing stays unannounced: any recorded change not yet in the audit channel is posted here."""
+        try:
+            await self.svc.alerts.flush_config_audit()
+        except Exception:  # noqa: BLE001
+            log.exception("config audit flush failed")
+
     @tasks.loop(minutes=30)
     async def backup_loop(self):
         """One consistent backup per UTC day, kept inside the persistent volume."""
@@ -180,5 +202,6 @@ class TunBankBot(commands.Bot):
     @scan_loop.before_loop
     @recon_loop.before_loop
     @backup_loop.before_loop
+    @audit_loop.before_loop
     async def _wait(self):
         await self.wait_until_ready()

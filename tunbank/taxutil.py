@@ -71,6 +71,9 @@ def add_exemption(conn, nation_id: int, reason: str, actor: str, days: int | Non
     expires = (utcnow() + dt.timedelta(days=days)).strftime(ISO_FMT) if days else None
     cur = conn.execute("INSERT INTO tax_exemptions(nation_id,reason,set_by,set_at,expires_at) VALUES(?,?,?,?,?)",
                        (nation_id, reason.strip(), str(actor), now_iso(), expires))
+    from . import configaudit as CA
+    CA.record(conn, actor=actor, setting="tax_exemption", previous="not exempt", new="exempt" + (f" until {expires}" if expires else ""),
+              target=f"nation [#{nation_id}] · {reason}", category="POLICY")
     L.audit(conn, actor, "TAX_EXEMPTION_ADDED", f"nation:{nation_id}", {"reason": reason, "expires": expires})
     return cur.lastrowid
 
@@ -83,6 +86,8 @@ def remove_exemption(conn, nation_id: int, note: str, actor: str) -> bool:
     cur = conn.execute("UPDATE tax_exemptions SET active=0, removed_by=?, removed_at=?, removal_note=? "
                        "WHERE nation_id=? AND active=1", (str(actor), now_iso(), note.strip(), nation_id))
     if cur.rowcount:
+        from . import configaudit as CA
+        CA.record(conn, actor=actor, setting="tax_exemption", previous="exempt", new="not exempt", target=f"nation [#{nation_id}] · {note}", category="POLICY")
         L.audit(conn, actor, "TAX_EXEMPTION_REMOVED", f"nation:{nation_id}", {"note": note})
     return bool(cur.rowcount)
 

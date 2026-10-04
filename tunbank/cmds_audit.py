@@ -433,6 +433,23 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
                    ("Unfreeze" if m["frozen"] else "Freeze", "🧊", "danger" if not m["frozen"] else "success", b_freeze)]
         await reply(interaction, card=c, view=ActionView(interaction.user.id, actions))
 
+    @audit.command(name="configlog", description="Admin: every configuration and security change, newest first")
+    @app_commands.describe(setting="Optional: only entries about this setting (or part of its name)")
+    async def configlog(interaction: discord.Interaction, setting: str = ""):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+        await thinking(interaction)
+        with svc.db.read() as conn:
+            if setting.strip():
+                rows = conn.execute("SELECT * FROM config_audit WHERE setting LIKE ? ORDER BY id DESC LIMIT 100", (f"%{setting.strip()}%",)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM config_audit ORDER BY id DESC LIMIT 100").fetchall()
+        lines = [f"`{r['ts'][5:16].replace('T', ' ')}` <@{r['actor_id']}> · **{r['setting']}**\n"
+                 f"-# {r['previous'] or '—'} → {r['new'] or '—'} · {r['action']}" + (f" · {r['target']}" if r["target"] else "") for r in rows]
+        await paginate(interaction, chunk_cards("⚙️ Configuration & security audit", lines, per_page=7,
+                                                empty="No configuration changes recorded yet.",
+                                                intro="Permanent record. Entries can't be edited or deleted."))
+
     @audit.command(name="run", description="Run a full reconciliation audit now")
     async def run(interaction: discord.Interaction):
         if not await need(svc, interaction, "AUDITOR"):

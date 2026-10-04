@@ -17,10 +17,16 @@ def set_limit(conn, scope: str, scope_id: str, *, per_tx_cents=None, daily_cents
     row = conn.execute("SELECT * FROM limits WHERE scope=? AND scope_id=?", (scope, scope_id)).fetchone()
     per_tx = row["per_tx_cents"] if row else None
     daily = row["daily_cents"] if row else None
+    old_text = f"per-transfer {dollars(per_tx) if per_tx else 'none'}, daily {dollars(daily) if daily else 'none'}"
     if per_tx_cents is not None:
         per_tx = per_tx_cents or None
     if daily_cents is not None:
         daily = daily_cents or None
+    from . import configaudit as CA
+    CA.record(conn, actor=actor, setting=f"limit:{scope}", previous=old_text,
+              new=f"per-transfer {dollars(per_tx) if per_tx else 'none'}, daily {dollars(daily) if daily else 'none'}",
+              target={"GLOBAL": "everyone (self-withdrawals)", "ROLE": f"role <@&{scope_id}>", "NATION": f"nation [#{scope_id}]"}.get(scope, scope_id),
+              category="LIMIT")
     conn.execute(
         "INSERT INTO limits(scope,scope_id,per_tx_cents,daily_cents,updated_by,updated_at) "
         "VALUES(?,?,?,?,?,?) ON CONFLICT(scope,scope_id) DO UPDATE SET per_tx_cents=excluded.per_tx_cents, "

@@ -260,6 +260,40 @@ class PnWClient:
         return rows[0] if rows else None
 
     # ------------------------------------------------------------- writing
+    async def fetch_key_owner(self, api_key: str):
+        """Which nation id does this API key belong to? Returns None when PnW doesn't expose that (not a failure)."""
+        from .config import BankAccess
+
+        probe = BankAccess("member", self.s.alliance_id, api_key, None, None)
+        try:
+            data = await self.query("{ me { nation { id } } }", bank=probe)
+        except PnWRejected as exc:
+            if "Cannot query field" in str(exc):
+                return None
+            raise
+        nation = ((data.get("me") or {}).get("nation")) or {}
+        return int(nation["id"]) if nation.get("id") not in (None, "") else None
+
+    async def bank_deposit(self, amounts: dict, note: str, member_api_key: str, bot_key: str) -> dict:
+        """Deposit from the nation that owns `member_api_key` into ITS OWN alliance bank (the mutation has no
+        destination argument). Uses the member's key together with our verified bot key. NEVER auto-retried."""
+        from .config import BankAccess
+
+        acting = BankAccess("member", self.s.alliance_id, member_api_key, member_api_key, bot_key)
+        var_defs = ["$note:String"]
+        args = ["note:$note"]
+        variables: dict = {"note": note}
+        for res, units in amounts.items():
+            var_defs.append(f"${res}:Float")
+            args.append(f"{res}:${res}")
+            variables[res] = M.units_to_float(units)
+        q = (f"mutation({', '.join(var_defs)}){{ bankDeposit({', '.join(args)}){{ " + BANKREC_FIELDS + " } }")
+        data = await self._post(q, variables, mutation=True, bank=acting)
+        rec = data.get("bankDeposit")
+        if not rec or rec.get("id") in (None, ""):
+            raise PnWUncertain("PnW answered but gave no bank record id")
+        return rec
+
     async def bank_withdraw(self, receiver_id: int, amounts: dict, note: str, receiver_type: int = 1, bank=None) -> dict:
         """Send resources OUT of `bank` (default: main). NEVER auto-retried.
 
