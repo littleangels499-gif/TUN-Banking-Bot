@@ -23,6 +23,8 @@ def normalize(rec: dict) -> dict:
     """Validate one PnW `Bankrec` dict and convert amounts to exact units."""
     if rec.get("id") in (None, ""):
         raise ValueError("bank record has no id")
+    from_tax_feed = bool(rec.get("_taxrec"))
+    rec = {k: v for k, v in rec.items() if k != "_taxrec"}      # the stored raw record stays exactly what PnW sent
     amounts = {}
     for res in M.RESOURCES:
         u = M.to_units(rec.get(res))
@@ -41,6 +43,7 @@ def normalize(rec: dict) -> dict:
         "banker_id": _int(rec.get("banker_id")),
         "note": (rec.get("note") or "")[:1000],
         "tax_id": _int(rec.get("tax_id")) or None,
+        "is_tax": from_tax_feed or bool(_int(rec.get("tax_id"))),
         "amounts": amounts,
         "raw_json": raw,
         "raw_sha256": sha256_text(raw),

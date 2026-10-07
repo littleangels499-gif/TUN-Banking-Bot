@@ -71,7 +71,7 @@ def classify_inbound(conn, n: dict, ctx: Ctx) -> tuple[str, str, int | None, str
     system_tags = {t.strip().lower() for t in cfg_get(conn, "system_tags").replace(";", ",").split(",") if t.strip()}
     if n["sender_type"] != 1:
         return "REVIEW", "AWAITING_REVIEW", None, "sender is not a nation"
-    if n["tax_id"]:                                   # positively identified by PnW as a tax collection
+    if n["tax_id"] or n.get("is_tax"):                # positively identified by PnW as a tax collection (tax id or tax feed)
         return "TAX", "NO_CREDIT", n["sender_id"], "PnW tax collection"
     if tags & system_tags:                            # explicitly configured system type
         return "OTHER", "NO_CREDIT", n["sender_id"], "configured system tag: " + ", ".join(sorted(tags & system_tags))
@@ -174,6 +174,7 @@ def process_record(conn, rec: dict, ctx: Ctx) -> Outcome:
         out.kind = "DONATION"
     elif cls == "LOAN_REPAYMENT":
         out.kind = "LOAN"
+        _apply_loan_payment(conn, n, out)
     else:
         out.kind = "REVIEW"
     return out
@@ -280,6 +281,30 @@ def backfill_tax_turns(conn) -> int:
         conn.execute("INSERT INTO tax_turns(turn_key,started_at,records,totals_json,last_seen_at,alerted_at) VALUES(?,?,?,?,?,'backfill')",
                      (key, key + ":00", t["n"], jdump(t["totals"]), now_iso()))
     return len(turns)
+
+
+def _apply_loan_payment(conn, n: dict, out: Outcome) -> None:
+    """Apply a freshly seen #loan record to the sender's loans (interest -> principal -> excess to deposit).
+    Failure here must never stop the scan, so it runs in a savepoint and falls back to 'needs ECON'."""
+    from . import loans as LN
+
+    conn.execute("SAVEPOINT loanapply")
+    try:
+        res = LN.apply_repayment(conn, record_id=n["id"], actor="system:scanner")
+        conn.execute("RELEASE loanapply")
+    except Exception as exc:  # noqa: BLE001
+        conn.execute("ROLLBACK TO loanapply")
+        conn.execute("RELEASE loanapply")
+        out.note = f"NOT applied to a loan yet ({exc}). ECON can apply it with /loan applypayment record:{n['id']}."
+        return
+    if not res["applied"]:
+        out.note = ("No active loan is recorded for this nation, so nothing was applied or credited. "
+                    f"ECON can review it (record #{n['id']}).")
+        return
+    parts = ", ".join(f"loan #{lid}: interest {LN.dollars(i)} + principal {LN.dollars(p)}" for lid, i, p in res["events"])
+    out.note = (f"Applied {LN.dollars(res['cash'])}: {parts}. Still owed: {LN.dollars(res['still_owed'])}."
+                + (f" {LN.dollars(res['excess'])} above what was owed was credited to their deposit." if res["excess"] else "")
+                + (" Other resources in the record were not applied." if res["other"] else ""))
 
 
 def _store_tax(conn, n: dict, ctx: Ctx):

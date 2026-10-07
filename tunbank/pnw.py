@@ -150,6 +150,33 @@ class PnWClient:
                 "alliance with bank-view permission.")
         return recs
 
+    async def fetch_taxrecs(self, bank=None) -> list[dict]:
+        """The alliance's TAX collections (about 14 days). PnW keeps these in their own field, `taxrecs`, separate from
+        `bankrecs`: asking only for bankrecs never returns a single tax record. Every record returned is marked
+        `_taxrec` so it can never be mistaken for a member deposit, whatever its fields look like."""
+        bank = bank or self.s.main
+        q = ("query($id:[Int]){ alliances(id:$id, first:1){ data{ id taxrecs{ "
+             + BANKREC_FIELDS + " } } } }")
+        data = await self.query(q, {"id": [bank.alliance_id]}, bank=bank)
+        rows = data.get("alliances", {}).get("data") or []
+        if not rows:
+            raise PnWRejected("Alliance not found - check ALLIANCE_ID.")
+        recs = rows[0].get("taxrecs")
+        if recs is None:
+            raise PnWRejected("PnW did not return tax records. The API key's nation must be in this alliance "
+                              "with bank-view permission.")
+        return [dict(r, _taxrec=True) for r in recs]
+
+    async def fetch_nation_tax_id(self, nation_id: int) -> int | None:
+        """The tax bracket id PnW has for this nation right now (best effort, never raises)."""
+        try:
+            data = await self.query("query($id:[Int]){ nations(id:$id, first:1){ data{ id tax_id } } }",
+                                    {"id": [int(nation_id)]})
+            rows = data.get("nations", {}).get("data") or []
+            return int(rows[0]["tax_id"]) if rows and rows[0].get("tax_id") else None
+        except (PnWError, ValueError, TypeError, KeyError):
+            return None
+
     async def fetch_bank_holdings(self, bank=None) -> dict:
         """The REAL bank contents of one alliance, as exact units."""
         bank = bank or self.s.main

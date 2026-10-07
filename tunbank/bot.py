@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_convert, cmds_deposit, cmds_grant, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
+from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_convert, cmds_deposit, cmds_grant, cmds_loan, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
 from . import ledger as L
 from .alerts import AlertService
 from .credentials import Crypto
@@ -58,6 +58,7 @@ class TunBankBot(commands.Bot):
         bulk = app_commands.Group(name="bulk", description="Pay many nations at once from alliance funds (ECON)")
         grant = app_commands.Group(name="grant", description="Alliance-approved grants (ECON)")
         deposit = app_commands.Group(name="deposit", description="Deposit reset and restoration (Admin)")
+        loan = app_commands.Group(name="loan", description="Loans: money members owe the alliance")
         cmds_member.register(bank, nation, self.svc)
         cmds_econ.register(bank, self.svc)            # must come first: defines svc.do_reconcile
         cmds_admin.register(bank, bankset, ledger, self.svc)
@@ -72,9 +73,10 @@ class TunBankBot(commands.Bot):
         cmds_audit.register_audit(audit, ledger, self.svc)
         cmds_deposit.register(deposit, self.svc)
         cmds_convert.register(bankset, self.svc)
+        cmds_loan.register(loan, self.svc)
         self.add_view(cmds_convert.ConversionPanelView(self.svc))     # the panel button keeps working after restarts
         self.tree.on_error = self.on_tree_error
-        for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit):
+        for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit, loan):
             self.tree.add_command(g)
         if self.settings.guild_id:
             guild = discord.Object(id=self.settings.guild_id)
@@ -178,6 +180,10 @@ class TunBankBot(commands.Bot):
             await self.svc.do_reconcile("system:scheduled")
         except Exception:  # noqa: BLE001
             log.exception("reconcile loop error")
+        try:
+            await self.svc.announce_overdue_loans()
+        except Exception:  # noqa: BLE001
+            log.exception("overdue loan check failed")
 
     @tasks.loop(seconds=20)
     async def audit_loop(self):

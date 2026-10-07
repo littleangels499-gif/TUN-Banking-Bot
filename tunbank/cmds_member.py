@@ -34,6 +34,21 @@ def _linked(svc, interaction):
         return L.member_by_discord(conn, interaction.user.id)
 
 
+def loan_summary(conn, nation_id: int) -> str:
+    """One short line about the member's active loans, or '' if they have none."""
+    from . import loans as LN
+    active = LN.active(conn, nation_id)
+    if not active:
+        return ""
+    text = f"**{LN.dollars(sum(LN.owed(l) for l in active))}** owed on {len(active)} loan(s)."
+    dues = sorted(l["due_at"][:10] for l in active if l["due_at"])
+    if any(LN.is_overdue(l) for l in active):
+        text += " ⚠️ **Overdue**: please contact ECON."
+    elif dues:
+        text += f" Next due: {dues[0]}."
+    return text + " See `/loan mine`."
+
+
 def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services):
     # ------------------------------------------------------------ /nation link
     @nation.command(name="link", description="Link and verify your Politics & War nation")
@@ -97,9 +112,10 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
                 return (L.get_balances(conn, m["nation_id"], "AVAILABLE"),
                         L.get_balances(conn, m["nation_id"], "LOCKED"),
                         L.holds(conn, m["nation_id"], "MEMBER_AVAILABLE"),
-                        L.integrity_state(conn))
+                        L.integrity_state(conn),
+                        loan_summary(conn, m["nation_id"]))
         import asyncio
-        av, lk, hold, st = await asyncio.to_thread(load)
+        av, lk, hold, st, loan_text = await asyncio.to_thread(load)
         va, vl = value_amounts(av, snap), value_amounts(lk, snap)
         total = value_amounts(M.add(av, lk), snap)
         c = A.Card(f"{icons.status('bank')} {title}", f"{icons.status('member')} **{m['nation_name'] or 'Your nation'}** [#{m['nation_id']}]", A.BLUE)
@@ -116,6 +132,8 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         mix = fmt.composition(M.add(av, lk), total)
         if mix:
             c.add("Where your value sits", mix)
+        if loan_text:
+            c.add("🤝 Loan · owed to the alliance (separate from your deposit)", loan_text)
         if m["frozen"]:
             c.add(f"{icons.status('freeze')} Account status", "FROZEN by ECON: withdrawals are disabled.")
             c.color = A.ORANGE

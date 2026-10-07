@@ -76,7 +76,22 @@ def check_justification(conn):
             "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='DEPOSIT' AND NOT EXISTS ("
             "SELECT 1 FROM pnw_records p WHERE p.id=e.pnw_record_id AND p.direction='IN' "
             "AND p.classification='MEMBER_DEPOSIT' AND p.credited_nation_id=e.nation_id "
-            "AND json_extract(p.amounts_json,'$.'||e.resource)=e.delta)"),
+            "AND json_extract(p.amounts_json,'$.'||e.resource)=e.delta) "
+            "AND NOT EXISTS (SELECT 1 FROM pnw_records p JOIN loan_events v ON v.pnw_record_id=p.id "
+            "WHERE p.id=e.pnw_record_id AND p.classification='LOAN_REPAYMENT' AND v.kind='REPAYMENT' "
+            "AND v.nation_id=e.nation_id AND e.resource='money' AND v.excess_cents=e.delta)"),
+        "loan deductions without a recorded loan deduction": (
+            "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='LOAN_DEDUCTION' AND NOT EXISTS ("
+            "SELECT 1 FROM loan_events v WHERE v.id=e.loan_event_id AND v.kind='DEDUCTION' AND v.nation_id=e.nation_id "
+            "AND v.interest_cents+v.principal_cents=-e.delta)"),
+        "loan deductions whose ledger entry is missing": (
+            "SELECT COUNT(*) FROM loan_events v WHERE v.kind='DEDUCTION' AND NOT EXISTS ("
+            "SELECT 1 FROM ledger_entries e WHERE e.entry_type='LOAN_DEDUCTION' AND e.loan_event_id=v.id)"),
+        "loans whose balances do not match their history": (
+            "SELECT COUNT(*) FROM loans l WHERE l.interest_paid_cents != COALESCE((SELECT SUM(interest_cents) FROM loan_events v "
+            "WHERE v.loan_id=l.id AND v.kind IN ('REPAYMENT','DEDUCTION','WRITE_OFF')),0) "
+            "OR l.principal_paid_cents != COALESCE((SELECT SUM(principal_cents) FROM loan_events v "
+            "WHERE v.loan_id=l.id AND v.kind IN ('REPAYMENT','DEDUCTION','WRITE_OFF')),0)"),
         "withdrawals without a completed PnW-confirmed transaction": (
             "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='WITHDRAWAL' AND NOT EXISTS ("
             "SELECT 1 FROM transactions t JOIN tx_items i ON i.tx_id=t.id "

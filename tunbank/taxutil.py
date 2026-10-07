@@ -31,7 +31,7 @@ def rows(conn, period: str = "30d", nation_id: int | None = None) -> list[dict]:
         if cutoff and (not day or day < cutoff):
             continue
         out.append({"id": r["id"], "pnw_record_id": r["pnw_record_id"], "nation_id": r["nation_id"],
-                    "tax_id": r["tax_id"], "date": day or "", "amounts": json.loads(r["amounts_json"]),
+                    "tax_id": r["tax_id"], "date": day or "", "when": r["record_date"] or r["recorded_at"] or "", "amounts": json.loads(r["amounts_json"]),
                     "price_snapshot_id": r["price_snapshot_id"]})
     return out
 

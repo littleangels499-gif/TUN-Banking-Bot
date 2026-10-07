@@ -48,8 +48,14 @@ def register_tax(tax: app_commands.Group, svc: Services):
         if not res.ok:
             return await reply(interaction, f"Sync failed: {res.error}")
         await post_outcomes(svc, res.outcomes)
-        await reply(interaction, f"Synced {res.seen} PnW record(s); "
-                                 f"{sum(1 for o in res.outcomes if o.kind in ('TAX',))} new tax record(s).")
+        new_tax = sum(1 for o in res.outcomes if o.kind in ('TAX',))
+        msg = (f"Synced {res.seen} PnW record(s); PnW's tax feed returned {res.tax_seen} tax record(s), "
+               f"{new_tax} of them new.")
+        if res.tax_error:
+            msg += f"\n⚠️ The tax feed could not be read: {res.tax_error}"
+        elif not res.tax_seen:
+            msg += "\nPnW returned no tax records for the last 14 days. Check that tax is switched on for your brackets in-game."
+        await reply(interaction, msg)
 
     # ------------------------------------------------------------ dashboard
     @tax.command(name="dashboard", description="Confidential: taxes collected, top payers and brackets for a period")
@@ -185,7 +191,14 @@ def register_tax(tax: app_commands.Group, svc: Services):
                 text += "\n-# Run `/tax brackets` to load the bracket's rates from PnW."
             c.add("Bracket · from the latest tax record", text)
         else:
-            c.add("Bracket", "_No tax records for this nation yet._")
+            cur = await svc.pnw.fetch_nation_tax_id(nid)
+            if cur:
+                b = known.get(cur)
+                c.add("Bracket · current, read live from PnW",
+                      f"**#{cur}**" + (f" {b.get('bracket_name') or ''} · cash {TX.rate_text(b.get('tax_rate'))} · resources {TX.rate_text(b.get('resource_tax_rate'))}" if b else
+                                       "\n-# Run `/tax brackets` to load the bracket's rates from PnW."))
+            else:
+                c.add("Bracket", "_No tax records for this nation yet._")
         tot30, totall = {}, {}
         for r in r30:
             tot30 = M.add(tot30, r["amounts"])
@@ -195,8 +208,15 @@ def register_tax(tax: app_commands.Group, svc: Services):
         c.add("Paid · all time", fmt.amounts_with_value(totall, value_amounts(totall, snap)), True)
         c.add("Records", f"{len(r30)} in 30 days · {len(allrs)} total", True)
         c.add("Exemption (TUN policy)", f"{icons.status('ok')} Exempt: {exempt_reason}\n-# This only marks them in reports; PnW still collects tax as set in-game." if exempt_reason else "Not exempt")
-        recent = "\n".join(f"`{r['date']}` {fmt.short_amounts(r['amounts'])} · PnW #{r['pnw_record_id']}" for r in allrs[-5:][::-1])
-        c.add("Latest payments", recent or "—")
+        from .records import turn_key
+
+        def line(r):
+            cash = r["amounts"].get("money", 0)
+            other = {k: v for k, v in r["amounts"].items() if k != "money"}
+            return (f"`{turn_key(r['when'])}:00 UTC` 💵 {fmt.dollars(cash)}"
+                    + (f" · {fmt.short_amounts(other)}" if other else "") + f" · #{r['pnw_record_id']}")
+        recent = "\n".join(line(r) for r in allrs[-8:][::-1])
+        c.add("Latest payments · one line per turn", recent or "—")
 
         async def b_exempt(i):
             if not await need(svc, i, "MINISTER"):

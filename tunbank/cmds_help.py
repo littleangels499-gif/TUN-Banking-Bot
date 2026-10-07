@@ -23,6 +23,7 @@ CATEGORIES = {
     "account": ("My account", "🏦", "Everything you do with your own deposit."),
     "banking": ("Banking", "💸", "Day-to-day work for ECON staff: sending, reserving, correcting and reviewing."),
     "bulk": ("Bulk transfers", "📦", "Pay many nations at once from alliance-owned funds. Every row is checked first and never sent twice."),
+    "loans": ("Loans", "🤝", "Money members owe the alliance. Kept separate from deposits."),
     "tax": ("Tax", "🧾", "Tax collected from members. Alliance-owned; members never see this."),
     "audit": ("Audit & security", "🔎", "Checks, approvals and the emergency lock."),
     "charts": ("Charts", "📊", "Pictures drawn from the bank's real data."),
@@ -47,6 +48,10 @@ CATALOG = {
     # bulk
     "bulk template": ("bulk", "BANKER"), "bulk send": ("bulk", "BANKER"), "bulk resume": ("bulk", "BANKER"),
     "bulk status": ("bulk", "AUDITOR"),
+    # loans
+    "loan mine": ("loans", "ALL"), "loan list": ("loans", "AUDITOR"), "loan view": ("loans", "AUDITOR"),
+    "loan add": ("loans", "MINISTER"), "loan deduct": ("loans", "MINISTER"), "loan applypayment": ("loans", "BANKER"),
+    "loan adopt": ("loans", "ADMIN"), "loan writeoff": ("loans", "ADMIN"),
     # tax
     "tax sync": ("tax", "BANKER"), "tax turns": ("tax", "FLAG:bank_view_tax"), "tax dashboard": ("tax", "FLAG:bank_view_tax"), "tax report": ("tax", "FLAG:bank_view_tax"),
     "tax paid": ("tax", "FLAG:bank_view_tax"), "tax profile": ("tax", "FLAG:bank_view_tax"), "tax brackets": ("tax", "FLAG:bank_view_tax"),

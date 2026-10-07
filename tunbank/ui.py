@@ -1,6 +1,8 @@
 """Shared Discord helpers: service container, permission checks, confirmation screens."""
 from __future__ import annotations
 
+import asyncio
+
 import io
 import logging
 from dataclasses import dataclass, field
@@ -28,6 +30,25 @@ class Services:
     offshore: object = None
     crypto: object = None
     deposits: object = None
+
+    async def announce_overdue_loans(self) -> int:
+        """Tell ECON once about each loan that has just become overdue. Nothing is ever taken automatically."""
+        from . import cmds_loan
+        from . import loans as LN
+
+        def find():
+            with self.db.read() as conn:
+                return [dict(l) for l in LN.newly_overdue(conn)]
+        late = await asyncio.to_thread(find)
+        for l in late:
+            await self.alerts.econ(cmds_loan.overdue_card(l))
+
+        def mark():
+            with self.db.tx() as conn:
+                LN.mark_overdue_alerted(conn, [l["id"] for l in late])
+        if late:
+            await asyncio.to_thread(mark)
+        return len(late)
 
 
 def actor_label(interaction: discord.Interaction) -> str:
