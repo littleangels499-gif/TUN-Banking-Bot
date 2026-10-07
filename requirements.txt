@@ -2,4 +2,5 @@ discord.py>=2.4,<3
 aiohttp>=3.9,<4
 python-dotenv>=1.0,<2
 openpyxl>=3.1,<4
+cryptography>=42
 matplotlib>=3.8,<4
