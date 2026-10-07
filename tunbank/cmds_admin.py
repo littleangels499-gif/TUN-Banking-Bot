@@ -116,7 +116,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
     # ------------------------------------------------------------ adjust
     @bank.command(name="adjust", description="ECON: documented correction of an ACCOUNTING ERROR (not a way to add money)")
     @app_commands.describe(nation="Member: id, name, link or @user", reason="What went wrong", evidence="Ticket, PnW record id, link...",
-                           add="Amounts to ADD (needs a 2nd approver)", remove="Amounts to REMOVE")
+                           add="Amounts to ADD (needs a 2nd approver)", remove="Amounts to REMOVE (below zero = a debt, needs a 2nd approver)")
     async def adjust(interaction: discord.Interaction, nation: str, reason: str, evidence: str,
                      add: str = "", remove: str = ""):
         if not await need(svc, interaction, "MINISTER"):
@@ -143,7 +143,12 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         val = value_amounts({r: abs(d) for r, d in deltas.items()}, snap)
         payload = {"nation": nation_id, "deltas": deltas, "evidence": evidence}
         approval_id = None
-        if any(d > 0 for d in deltas.values()):
+        try:
+            with svc.db.read() as conn:
+                debt = L.adjustment_debt(conn, nation_id, deltas)
+        except L.LedgerError as exc:
+            return await reply(interaction, f"Not applied: {exc}")
+        if any(d > 0 for d in deltas.values()) or debt:
             def find():
                 from .util import parse_iso, utcnow
                 with svc.db.tx() as conn:
@@ -157,7 +162,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                     return L.create_approval(conn, "ADJUSTMENT", payload, uid(interaction), reason), False
             approval_id, approved = await asyncio.to_thread(find)
             if not approved:
-                c = A.Card("Adjustment needs approval", "Adding funds to an account needs a SECOND staff member.",
+                c = A.Card("Adjustment needs approval", "Adding funds, or taking a balance below zero, needs a SECOND staff member.",
                            A.ORANGE, kind="APPROVAL")
                 c.add("Request", f"#{approval_id} by {actor_label(interaction)}")
                 c.add("Nation", f"#{nation_id}", True)
@@ -172,6 +177,10 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         card.add("Nation", f"#{nation_id}", True)
         card.add("Change", "\n".join(f"{M.LABELS[r]}: {'+' if d > 0 else ''}{M.fmt_units(r, d)}" for r, d in deltas.items())
                  + "\n" + fmt.value_line(val))
+        if debt:
+            card.add("⚠️ Takes a balance BELOW ZERO",
+                     "\n".join(f"{M.LABELS[r]}: resulting balance −{M.fmt_units(r, -b)} (a debt to the alliance, not clamped)"
+                               for r, b in debt.items()))
         card.add("Reason", reason)
         card.add("Evidence", evidence)
         if not await confirm(svc, interaction, card):
@@ -680,7 +689,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
 
     # --------------------------------------------------------- opening balances
     @bankset.command(name="importopening", description="Admin: import opening balances from a spreadsheet (preview first)")
-    @app_commands.describe(file=".xlsx or .csv: nation_id plus one column per resource", note="Where this data came from")
+    @app_commands.describe(file=".xlsx or .csv: nation_id and/or nation_name plus one column per resource", note="Where this data came from")
     async def importopening(interaction: discord.Interaction, file: discord.Attachment, note: str):
         if not await need(svc, interaction, "ADMIN"):
             return
@@ -694,17 +703,9 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         except (PnWRejected, PnWUncertain):
             members = None
         p = await asyncio.to_thread(importer.preview, file.filename, data, members=members, snapshot=snap)
-        c = A.Card("Opening-balance import PREVIEW", "", A.RED if p.blocked else A.ORANGE)
-        c.add("File", f"{file.filename}\nSHA-256 `{p.file_sha256[:16]}…`", True)
-        c.add("Members found / rows", f"{len(p.nations)} nations, {len(p.rows)} amounts", True)
-        c.add("Total to be imported", fmt.amounts_with_value(p.totals, p.valuation))
-        if p.missing_members:
-            c.add("Alliance members missing from file", ", ".join(map(str, p.missing_members[:20])) + (" …" if len(p.missing_members) > 20 else ""))
-        if p.warnings:
-            c.add("Warnings", "\n".join(p.warnings[:8]))
+        from .cmds_deposit import import_preview_card
+        c = import_preview_card(p, "Opening-balance import PREVIEW")
         if p.errors:
-            c.add(f"ERRORS ({len(p.errors)}): import BLOCKED", "\n".join(p.errors[:12]))
-            c.add("Fix the file and upload it again", "Nothing was imported.")
             return await reply(interaction, card=c)
         if not await confirm(svc, interaction, c):
             return await reply(interaction, "Import cancelled. Nothing was changed.")

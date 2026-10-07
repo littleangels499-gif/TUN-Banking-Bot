@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import datetime as dt
 
+from . import ledger as L
+from . import money as M
+from .config import cfg_bool
 from .fmt import dollars
 from .ledger import LedgerError
+from .valuation import value_amounts
 from .util import ISO_FMT, now_iso, utcnow
 
 
@@ -44,6 +48,45 @@ def _used_last_24h(conn, column: str, value) -> int:
         f"SELECT COALESCE(SUM(value_cents),0) s FROM transactions WHERE {column}=? AND created_at>=? "
         "AND status IN ('CONFIRMED','COMPLETED','RECONCILIATION_REQUIRED')", (value, since)).fetchone()
     return r["s"]
+
+
+class NetWorthExceeded(LimitExceeded):
+    pass
+
+
+def net_worth(conn, nation_id: int, snapshot) -> tuple:
+    """(amounts, Valuation) of a member's NET deposit: available (+ locked) minus what in-flight withdrawals already
+    promised. Negative resources stay negative and reduce the total. Uses the same price snapshot as everything else."""
+    amounts = L.get_balances(conn, nation_id, "AVAILABLE")
+    amounts = M.sub(amounts, L.holds(conn, nation_id, "MEMBER_AVAILABLE"))
+    if cfg_bool(conn, "net_worth_include_locked"):
+        amounts = M.add(amounts, L.get_balances(conn, nation_id, "LOCKED"))
+        amounts = M.sub(amounts, L.holds(conn, nation_id, "MEMBER_LOCKED"))
+    return amounts, value_amounts(amounts, snapshot)
+
+
+def check_net_worth(conn, *, tx_type: str, nation_id: int, amounts: dict, snapshot) -> None:
+    """A member's own withdrawal may not be worth more than their net deposit worth (current market prices).
+
+    Applies to WITHDRAW_SELF only, so ECON / alliance-funded payments are never restricted by it. If any needed
+    price is missing or unreliable the withdrawal is refused: resources are never silently valued at zero."""
+    if tx_type != "WITHDRAW_SELF" or not cfg_bool(conn, "net_worth_withdraw_limit"):
+        return
+    net_amounts, net_val = net_worth(conn, nation_id, snapshot)
+    req_val = value_amounts(amounts, snapshot)
+    if not (net_val.usable_for_limits and req_val.usable_for_limits) or net_val.total_cents is None \
+            or req_val.total_cents is None:
+        missing = sorted(set(net_val.missing) | set(req_val.missing))
+        why = f" (no price for: {', '.join(missing)})" if missing else " (prices look unreliable)"
+        raise NetWorthExceeded("Withdrawal rejected. Current market prices can't be verified right now" + why
+                               + ", so your net deposit worth can't be calculated. Please try again shortly or ask ECON.")
+    net_c, req_c = net_val.total_cents, req_val.total_cents
+    if req_c > net_c:
+        raise NetWorthExceeded(
+            "Withdrawal rejected.\n\n"
+            f"Current net deposit worth: {dollars(net_c)}\n"
+            f"Requested withdrawal value: {dollars(req_c)}\n"
+            f"Maximum allowed: {dollars(max(net_c, 0))}")
 
 
 def check(conn, *, is_self: bool, nation_id, actor_id, actor_role_ids, amounts: dict, valuation, skip_per_tx: bool = False):

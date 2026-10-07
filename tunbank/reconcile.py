@@ -54,9 +54,12 @@ def check_balances(conn):
                       f"{len(bad)} balance(s) do not equal the sum of their ledger history "
                       "(someone or something changed a balance without a ledger entry).",
                       details={"examples": bad[:15], "count": len(bad)}))
-    neg = [k for k, v in sums.items() if v < 0]
+    # A negative AVAILABLE balance is a legitimate debt to the alliance (restored from a spreadsheet or deducted by
+    # an approved adjustment) and is part of the member's net accounting balance. A negative LOCKED balance is
+    # still impossible: locks can only hold what was reserved.
+    neg = [k for k, v in sums.items() if v < 0 and k[1] == "LOCKED"]
     if neg:
-        out.append(_f("CRITICAL", "NEGATIVE_BALANCE", f"{len(neg)} impossible negative balance(s).",
+        out.append(_f("CRITICAL", "NEGATIVE_BALANCE", f"{len(neg)} impossible negative LOCKED balance(s).",
                       details={"examples": [list(k) for k in neg[:15]]}))
     return out
 
@@ -83,6 +86,20 @@ def check_justification(conn):
             "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='OPENING' AND NOT EXISTS ("
             "SELECT 1 FROM opening_balance_rows r WHERE r.batch_id=e.batch_id "
             "AND r.nation_id=e.nation_id AND r.resource=e.resource AND r.amount=e.delta)"),
+        "restores without a committed restore import batch": (
+            "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='RESTORE' AND NOT EXISTS ("
+            "SELECT 1 FROM opening_balance_rows r JOIN import_batches b ON b.id=r.batch_id "
+            "AND b.kind='RESTORE' AND b.reset_id IS NOT NULL WHERE r.batch_id=e.batch_id "
+            "AND r.nation_id=e.nation_id AND r.resource=e.resource AND r.amount=e.delta)"),
+        "resets without a matching reset record": (
+            "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='RESET' AND NOT EXISTS ("
+            "SELECT 1 FROM deposit_reset_items i WHERE i.reset_id=e.reset_id AND i.nation_id=e.nation_id "
+            "AND i.bucket=e.bucket AND i.resource=e.resource AND i.lock_id IS e.lock_id AND i.amount=-e.delta)"),
+        "reset records whose ledger entries are missing": (
+            "SELECT COUNT(*) FROM deposit_reset_items i WHERE NOT EXISTS ("
+            "SELECT 1 FROM ledger_entries e WHERE e.entry_type='RESET' AND e.reset_id=i.reset_id "
+            "AND e.nation_id=i.nation_id AND e.bucket=i.bucket AND e.resource=i.resource "
+            "AND e.lock_id IS i.lock_id AND e.delta=-i.amount)"),
         "adjustments without documented reason/evidence": (
             "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='ADJUSTMENT' AND NOT EXISTS ("
             "SELECT 1 FROM adjustments j JOIN adjustment_items a ON a.adjustment_id=j.id "
@@ -131,6 +148,8 @@ def batch_fingerprint(rows) -> str:
 def check_opening(conn):
     out = []
     for b in conn.execute("SELECT * FROM import_batches"):
+        if b["kind"] not in ("OPENING", "RESTORE"):
+            continue
         rows = conn.execute("SELECT nation_id, resource, amount FROM opening_balance_rows "
                             "WHERE batch_id=?", (b["id"],)).fetchall()
         if batch_fingerprint(rows) != b["rows_sha256"]:
@@ -139,7 +158,7 @@ def check_opening(conn):
                           "fingerprint.", details={"batch": b["id"]}, key=f"opening:{b['id']}"))
         led = {(r["nation_id"], r["resource"]): r["s"] for r in conn.execute(
             "SELECT nation_id, resource, SUM(delta) s FROM ledger_entries "
-            "WHERE entry_type='OPENING' AND batch_id=? GROUP BY nation_id, resource", (b["id"],))}
+            "WHERE entry_type=? AND batch_id=? GROUP BY nation_id, resource", (b["kind"], b["id"]))}
         src = {(r["nation_id"], r["resource"]): r["amount"] for r in rows}
         if led != src:
             out.append(_f("CRITICAL", "OPENING_CHANGED",
@@ -160,7 +179,7 @@ def in_flight_out_of_bank(conn) -> dict:
 
 def bank_position(conn, holdings: dict | None) -> dict:
     """The transparent alliance-owned calculation shown on the vault dashboard."""
-    held = L.totals_held(conn)
+    held = L.positive_claims(conn)      # debts (negative balances) never reduce other members' claims
     member_total = M.add(held["AVAILABLE"], held["LOCKED"])
     in_flight = in_flight_out_of_bank(conn)
     effective_member = M.sub(member_total, in_flight)
@@ -168,7 +187,7 @@ def bank_position(conn, holdings: dict | None) -> dict:
     if holdings is not None:
         alliance = {r: holdings.get(r, 0) - effective_member.get(r, 0) for r in M.RESOURCES
                     if holdings.get(r, 0) or effective_member.get(r, 0)}
-    return {"bank": holdings, "available": held["AVAILABLE"], "locked": held["LOCKED"],
+    return {"bank": holdings, "available": held["AVAILABLE"], "locked": held["LOCKED"], "owed_to_alliance": held["OWED"],
             "member_total": member_total, "in_flight_out": in_flight,
             "alliance_owned": alliance}
 

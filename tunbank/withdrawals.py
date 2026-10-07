@@ -95,6 +95,7 @@ class WithdrawalService:
                     return existing["id"], False, None
                 LIM.check(conn, is_self=(tx_type == "WITHDRAW_SELF"), nation_id=member_nation_id,
                           actor_id=actor, actor_role_ids=actor_role_ids, amounts=amounts, valuation=val)
+                LIM.check_net_worth(conn, tx_type=tx_type, nation_id=member_nation_id, amounts=amounts, snapshot=snap)
                 tx_id, created = L.begin_withdrawal(
                     conn, tx_type=tx_type, funding_source=funding_source,
                     member_nation_id=member_nation_id, lock_id=lock_id, dest_nation_id=dest_nation_id,

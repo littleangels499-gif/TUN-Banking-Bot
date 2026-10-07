@@ -223,7 +223,7 @@ def member_by_discord(conn, discord_id) -> object | None:
 # -------------------------------------------------------------- balances
 def get_balances(conn, nation_id: int, bucket: str) -> dict:
     rows = conn.execute(
-        "SELECT resource, amount FROM balances WHERE nation_id=? AND bucket=? AND amount>0",
+        "SELECT resource, amount FROM balances WHERE nation_id=? AND bucket=? AND amount!=0",
         (nation_id, bucket),
     ).fetchall()
     return {r["resource"]: r["amount"] for r in rows}
@@ -273,6 +273,21 @@ def totals_held(conn) -> dict:
     return out
 
 
+def positive_claims(conn) -> dict:
+    """Member-owned funds that physically sit in the alliance bank: the sum of every POSITIVE balance.
+
+    A negative balance is money a member OWES the alliance. It does not make another member's funds smaller, so it
+    must never be netted against them when working out what the bank has to hold (see reconcile.bank_position).
+    Returns {'AVAILABLE': {...}, 'LOCKED': {...}, 'OWED': {...}}."""
+    out = {"AVAILABLE": {}, "LOCKED": {}, "OWED": {}}
+    for r in conn.execute("SELECT bucket, resource, amount FROM balances WHERE amount != 0"):
+        if r["amount"] > 0:
+            out[r["bucket"]][r["resource"]] = out[r["bucket"]].get(r["resource"], 0) + r["amount"]
+        else:
+            out["OWED"][r["resource"]] = out["OWED"].get(r["resource"], 0) - r["amount"]
+    return out
+
+
 # ------------------------------------------------------------ posting
 def new_group(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
@@ -294,11 +309,11 @@ def post_entries(conn, rows: Iterable[dict]) -> int:
         conn.execute(
             "INSERT INTO ledger_entries(ts,group_id,nation_id,bucket,resource,delta,entry_type,"
             "pnw_record_id,tx_id,lock_id,batch_id,adjustment_id,actor,note,price_snapshot_id,"
-            "prev_hash,entry_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "prev_hash,entry_hash,reset_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (r["ts"], r["group_id"], r["nation_id"], r["bucket"], r["resource"], r["delta"],
              r["entry_type"], r.get("pnw_record_id"), r.get("tx_id"), r.get("lock_id"),
              r.get("batch_id"), r.get("adjustment_id"), r["actor"], r.get("note"),
-             r.get("price_snapshot_id"), prev, h),
+             r.get("price_snapshot_id"), prev, h, r.get("reset_id")),
         )
         prev = h
         n += 1
@@ -634,11 +649,31 @@ def revoke_approval(conn, approval_id: int, actor: str) -> bool:
 
 
 # ------------------------------------------------------------ adjustments
+def adjustment_debt(conn, nation_id: int, deltas: dict) -> dict:
+    """Resources whose AVAILABLE balance an adjustment would take below zero -> {resource: resulting balance}.
+
+    The balance is NOT clamped: 10,000 steel minus 30,000 steel is -20,000 steel. Refused while a pending withdrawal
+    is holding that resource (the debt would silently uncover it)."""
+    bal = get_balances(conn, nation_id, "AVAILABLE")
+    held = holds(conn, nation_id, "MEMBER_AVAILABLE")
+    out = {}
+    for res, d in deltas.items():
+        if d >= 0:
+            continue
+        after = bal.get(res, 0) + d
+        if after < 0 and (bal.get(res, 0) - held.get(res, 0)) < -d:
+            if held.get(res, 0):
+                raise InsufficientFunds(f"A pending withdrawal is holding {M.LABELS[res]}; wait for it to finish "
+                                        "before taking this balance below zero.")
+            out[res] = after
+    return out
+
+
 def apply_adjustment(conn, *, nation_id: int, deltas: dict, reason: str, evidence: str,
                      actor: str, approval_id: int | None, snapshot_id=None) -> dict:
     """Documented correction of an accounting error. NOT a way to fund an account.
 
-    Positive changes require a second staff member's approval (approval_id)."""
+    Positive changes, and any change that takes a balance below zero, require a second staff member's approval."""
     deltas = {r: int(v) for r, v in deltas.items() if v}
     for r in deltas:
         if r not in M.RESOURCES:
@@ -648,16 +683,18 @@ def apply_adjustment(conn, *, nation_id: int, deltas: dict, reason: str, evidenc
     if not reason.strip() or not evidence.strip():
         raise LedgerError("A reason AND evidence/reference are mandatory for adjustments.")
     assert_can_mutate(conn, nation_id, "adjust")
-    if any(v > 0 for v in deltas.values()):
+    debt = adjustment_debt(conn, nation_id, deltas)          # {resource: resulting NEGATIVE balance}
+    if any(v > 0 for v in deltas.values()) or debt:
+        what = "Positive adjustments" if not debt else "Taking a balance below zero (a debt)"
         if approval_id is None:
-            raise LedgerError("Positive adjustments require two-person approval.")
+            raise LedgerError(f"{what} require two-person approval.")
         ap = get_approval(conn, approval_id)
         if not ap or ap["kind"] != "ADJUSTMENT" or not ap["approved_by"] \
                 or ap["approved_by"] == ap["requested_by"]:
             raise LedgerError("No valid second-person approval for this adjustment.")
     avail = spendable(conn, nation_id)
     for res, d in deltas.items():
-        if d < 0 and avail.get(res, 0) < -d:
+        if d < 0 and res not in debt and avail.get(res, 0) < -d:
             raise InsufficientFunds(
                 f"Cannot remove {M.fmt_units(res, -d)} {M.LABELS[res]}: only "
                 f"{M.fmt_units(res, avail.get(res, 0))} is spendable.")

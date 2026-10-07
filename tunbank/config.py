@@ -218,6 +218,8 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "system_tags": ("", "Comma-separated notes that mark a SYSTEM transaction, not a member deposit (blank = none)"),
     "backup_keep_daily": ("30", "How many daily backups to keep"),
     "opening_import_allowed": ("1", "1 = spreadsheet opening-balance import is allowed"),
+    "net_worth_withdraw_limit": ("1", "1 = a member's own withdrawal may not be worth more than their net deposit worth"),
+    "net_worth_include_locked": ("1", "1 = locked balances count towards net deposit worth (0 = available funds only)"),
     "config_audit_channel_id": ("", "Discord channel ID for the private configuration/security audit log"),
     "member_deposit_enabled": ("1", "1 = members who linked their own API key may start deposits from Discord"),
     "tax_alert_channel_id": ("", "Discord channel ID for the one-per-turn tax summary (blank = use the ECON log)"),

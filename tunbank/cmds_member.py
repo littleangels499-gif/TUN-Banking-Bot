@@ -107,7 +107,12 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         c.add(f"{icons.status('lock')} Locked · reserved by ECON", fmt.amounts_with_value(lk, vl))
         if hold:
             c.add(f"{icons.status('wait')} Pending withdrawals · on hold", fmt.amount_lines(hold))
-        c.add(f"{icons.status('chart')} Total deposit", fmt.amounts_with_value(M.add(av, lk), total))
+        owes = any(v < 0 for v in M.add(av, lk).values()) or any(v < 0 for v in av.values())
+        c.add(f"{icons.status('chart')} " + ("Net deposit" if owes else "Total deposit"), fmt.amounts_with_value(M.add(av, lk), total))
+        if owes:
+            c.add("➖ Negative balances",
+                  "A negative amount is owed to the alliance. It reduces your net deposit worth, which is the most a single "
+                  "withdrawal may be worth. Your withdrawals are still limited to what you hold.")
         mix = fmt.composition(M.add(av, lk), total)
         if mix:
             c.add("Where your value sits", mix)
@@ -392,6 +397,12 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
             if any(locked.get(r) for r in parsed):
                 msg += " Locked (reserved) funds cannot be withdrawn; ask ECON."
             return await reply(interaction, msg)
+        from . import limits as LIM
+        try:
+            with svc.db.read() as conn:
+                LIM.check_net_worth(conn, tx_type="WITHDRAW_SELF", nation_id=nid, amounts=parsed, snapshot=snap)
+        except LIM.LimitExceeded as exc:
+            return await reply(interaction, str(exc))
         card = A.Card(f"{icons.status('withdraw')} Confirm withdrawal", "Check everything carefully. Nothing is sent until you press Confirm.", A.ORANGE)
         card.add(f"{icons.status('money')} Funding source", "YOUR AVAILABLE DEPOSIT", True)
         card.add(f"{icons.status('member')} Destination", f"Your nation [#{nid}]", True)
