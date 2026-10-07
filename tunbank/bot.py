@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_deposit, cmds_grant, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
+from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_convert, cmds_deposit, cmds_grant, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
 from . import ledger as L
 from .alerts import AlertService
 from .credentials import Crypto
@@ -71,6 +71,8 @@ class TunBankBot(commands.Bot):
         cmds_audit.register_tax(tax, self.svc)
         cmds_audit.register_audit(audit, ledger, self.svc)
         cmds_deposit.register(deposit, self.svc)
+        cmds_convert.register(bankset, self.svc)
+        self.add_view(cmds_convert.ConversionPanelView(self.svc))     # the panel button keeps working after restarts
         self.tree.on_error = self.on_tree_error
         for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit):
             self.tree.add_command(g)

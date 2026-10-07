@@ -100,6 +100,13 @@ def check_justification(conn):
             "SELECT 1 FROM ledger_entries e WHERE e.entry_type='RESET' AND e.reset_id=i.reset_id "
             "AND e.nation_id=i.nation_id AND e.bucket=i.bucket AND e.resource=i.resource "
             "AND e.lock_id IS i.lock_id AND e.delta=-i.amount)"),
+        "conversions without a conversion record": (
+            "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='CONVERSION' AND NOT EXISTS ("
+            "SELECT 1 FROM conversions c WHERE c.id=e.conversion_id AND c.nation_id=e.nation_id AND "
+            "((e.resource=c.from_resource AND e.delta=-c.from_units) OR (e.resource=c.to_resource AND e.delta=c.to_units)))"),
+        "conversion records whose ledger entries are incomplete": (
+            "SELECT COUNT(*) FROM conversions c WHERE (SELECT COUNT(*) FROM ledger_entries e WHERE "
+            "e.entry_type='CONVERSION' AND e.conversion_id=c.id)!=2"),
         "adjustments without documented reason/evidence": (
             "SELECT COUNT(*) FROM ledger_entries e WHERE entry_type='ADJUSTMENT' AND NOT EXISTS ("
             "SELECT 1 FROM adjustments j JOIN adjustment_items a ON a.adjustment_id=j.id "

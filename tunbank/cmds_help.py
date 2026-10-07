@@ -56,7 +56,7 @@ CATALOG = {
     "bank revoke": ("audit", "MINISTER"), "audit transactions": ("audit", "AUDITOR"), "audit stafflog": ("audit", "AUDITOR"),
     "audit nation": ("audit", "AUDITOR"), "audit run": ("audit", "AUDITOR"), "audit configlog": ("audit", "ADMIN"), "ledger reconcile": ("audit", "AUDITOR"),
     "ledger dashboard": ("audit", "AUDITOR"), "ledger emergencylock": ("audit", "MINISTER"), "ledger resolve": ("audit", "ADMIN"),
-    "deposit reset": ("config", "ADMIN"), "deposit restore": ("config", "ADMIN"),
+    "bankset conversionpanel": ("config", "ADMIN"), "deposit reset": ("config", "ADMIN"),
     # charts (staff)
     "chart nation": ("charts", "AUDITOR"), "chart vault": ("charts", "FLAG:bank_view_alliance_holdings"), "chart members": ("charts", "FLAG:bank_view_alliance_holdings"),
     "chart deposits": ("charts", "AUDITOR"), "chart tax": ("charts", "FLAG:bank_view_tax"),

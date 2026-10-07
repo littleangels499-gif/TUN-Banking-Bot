@@ -180,7 +180,7 @@ def integrity_state(conn) -> dict:
 def assert_can_mutate(conn, nation_id: int | None, op: str) -> None:
     """Raise FinancialBlocked if this kind of money movement must not happen now.
 
-    op is one of: withdraw, lock, release, adjust, import.
+    op is one of: withdraw, convert, lock, release, adjust, import.
     """
     st = integrity_state(conn)
     if st["emergency_lock"]:
@@ -188,9 +188,10 @@ def assert_can_mutate(conn, nation_id: int | None, op: str) -> None:
             "EMERGENCY LOCK is active - all financial changes are halted until "
             f"authorized staff review. Reason: {st['emergency_reason'] or 'not given'}"
         )
-    if op == "withdraw" and st["bank_paused"]:
-        raise FinancialBlocked("Withdrawals are paused by ECON (/bank unlock to resume).")
-    if op in ("withdraw", "lock", "import"):
+    if op in ("withdraw", "convert") and st["bank_paused"]:
+        raise FinancialBlocked("Withdrawals and conversions are paused by ECON (/bank unlock to resume)." if op == "convert"
+                               else "Withdrawals are paused by ECON (/bank unlock to resume).")
+    if op in ("withdraw", "convert", "lock", "import"):
         rows = conn.execute(
             "SELECT id, nation_id, kind FROM integrity_events WHERE status='OPEN' "
             "AND severity IN ('RECON','CRITICAL')"
@@ -309,11 +310,11 @@ def post_entries(conn, rows: Iterable[dict]) -> int:
         conn.execute(
             "INSERT INTO ledger_entries(ts,group_id,nation_id,bucket,resource,delta,entry_type,"
             "pnw_record_id,tx_id,lock_id,batch_id,adjustment_id,actor,note,price_snapshot_id,"
-            "prev_hash,entry_hash,reset_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "prev_hash,entry_hash,reset_id,conversion_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (r["ts"], r["group_id"], r["nation_id"], r["bucket"], r["resource"], r["delta"],
              r["entry_type"], r.get("pnw_record_id"), r.get("tx_id"), r.get("lock_id"),
              r.get("batch_id"), r.get("adjustment_id"), r["actor"], r.get("note"),
-             r.get("price_snapshot_id"), prev, h, r.get("reset_id")),
+             r.get("price_snapshot_id"), prev, h, r.get("reset_id"), r.get("conversion_id")),
         )
         prev = h
         n += 1

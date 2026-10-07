@@ -688,23 +688,34 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             await post_outcomes(svc, [out])
 
     # --------------------------------------------------------- opening balances
-    @bankset.command(name="importopening", description="Admin: import opening balances from a spreadsheet (preview first)")
-    @app_commands.describe(file=".xlsx or .csv: nation_id and/or nation_name plus one column per resource", note="Where this data came from")
+    @bankset.command(name="importopening", description="Admin: import balances from a spreadsheet (opening, or restore after a reset)")
+    @app_commands.describe(file=".xlsx or .csv: nation_id and/or nation_name, one column per resource, optional loan column",
+                           note="Where this data came from")
     async def importopening(interaction: discord.Interaction, file: discord.Attachment, note: str):
+        """ONE import command. If a /deposit reset is waiting for its balances it restores them (negatives and loans
+        allowed); otherwise it is the normal first-time opening-balance import."""
         if not await need(svc, interaction, "ADMIN"):
             return
         await thinking(interaction)
         if file.size > importer.MAX_BYTES:
             return await reply(interaction, "File is too large (max 5 MB).")
+        from . import deposit_reset as DR
+        from .cmds_deposit import import_preview_card
+        with svc.db.read() as conn:
+            rs = DR.open_reset(conn)
+            nonzero = conn.execute("SELECT COUNT(*) FROM balances WHERE amount != 0").fetchone()[0] if rs else 0
+        kind = "RESTORE" if rs else "OPENING"
         data = await file.read()
         snap = await svc.prices.get()
         try:
             members = await svc.pnw.fetch_alliance_members()
         except (PnWRejected, PnWUncertain):
             members = None
-        p = await asyncio.to_thread(importer.preview, file.filename, data, members=members, snapshot=snap)
-        from .cmds_deposit import import_preview_card
-        c = import_preview_card(p, "Opening-balance import PREVIEW")
+        p = await asyncio.to_thread(importer.preview, file.filename, data, members=members, snapshot=snap, mode=kind)
+        c = import_preview_card(p, f"Restore PREVIEW (after deposit reset #{rs['id']})" if rs else "Opening-balance import PREVIEW",
+                                current_nonzero=nonzero)
+        c.add("Import type", (f"RESTORE: these become the balances after deposit reset #{rs['id']}. Negative amounts and loans are allowed."
+                              if rs else "OPENING: first-time balances. Existing balances are never overwritten; negatives are not allowed here."))
         if p.errors:
             return await reply(interaction, card=c)
         if not await confirm(svc, interaction, c):
@@ -712,13 +723,24 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         try:
             def do():
                 with svc.db.tx() as conn:
-                    return importer.commit(conn, p, admin_id=uid(interaction), note=note, snapshot_id=snap.id if snap else None)
+                    return importer.commit(conn, p, admin_id=uid(interaction), note=note, kind=kind,
+                                           reset_id=rs["id"] if rs else None, snapshot_id=snap.id if snap else None)
             res = await asyncio.to_thread(do)
         except L.LedgerError as exc:
-            return await reply(interaction, f"Import refused: {exc}")
-        out = A.Card("Opening balances imported", f"Batch #{res['batch_id']} by {actor_label(interaction)}", A.GREEN, kind="IMPORT")
-        out.add("Rows / nations", f"{res['rows']} / {res['nations']}", True)
-        out.add("Total", fmt.amounts_with_value(res["totals"], p.valuation))
+            return await reply(interaction, f"Import refused, nothing was changed: {exc}")
+        if rs:
+            out = A.Card("♻️ Balances restored", f"Batch #{res['batch_id']} (reset #{rs['id']}) by {actor_label(interaction)}", A.GREEN, kind="IMPORT")
+            out.add("Nations / amounts", f"{res['nations']} / {res['rows']}", True)
+            out.add("Net value", fmt.value_line(p.valuation), True)
+            if res["loans"]:
+                out.add("Outstanding loans stored", f"{res['loans']} nation(s) · ${res['loan_total_cents'] / 100:,.2f} (not deposits)")
+            out.add("Next step", "Run `/ledger reconcile`, then `/bank unlock` to resume withdrawals.")
+        else:
+            out = A.Card("Opening balances imported", f"Batch #{res['batch_id']} by {actor_label(interaction)}", A.GREEN, kind="IMPORT")
+            out.add("Rows / nations", f"{res['rows']} / {res['nations']}", True)
+            out.add("Total", fmt.amounts_with_value(res["totals"], p.valuation))
+            if res["loans"]:
+                out.add("Outstanding loans stored", f"{res['loans']} nation(s) · ${res['loan_total_cents'] / 100:,.2f} (not deposits)")
         await reply(interaction, card=out)
         await svc.alerts.econ(out)
 

@@ -77,7 +77,7 @@ def execute(conn, *, actor: str, reason: str, snapshot) -> dict:
     waiting = open_reset(conn)
     if waiting:
         raise L.LedgerError(f"Deposit reset #{waiting['id']} is still waiting for its restore import. "
-                            "Run `/deposit restore` first.")
+                            "Load its balances with `/bankset importopening` first.")
     lines = current_lines(conn)
     if not lines:
         raise L.LedgerError("There are no member balances to reset.")

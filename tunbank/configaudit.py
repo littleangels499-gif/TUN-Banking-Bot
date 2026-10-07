@@ -25,7 +25,7 @@ TITLES = {
 }
 FINANCIAL_KEYS = {"approval_threshold_value", "offshore_access", "offshore_keep_in_main", "grant_min_level", "large_credit_value",
                   "self_withdraw_enabled", "econ_locked_withdraw_enabled", "require_alliance_member_deposit", "opening_import_allowed",
-                  "net_worth_withdraw_limit", "net_worth_include_locked",
+                  "net_worth_withdraw_limit", "net_worth_include_locked", "conversion_enabled", "conversion_max_value",
                   "member_deposit_enabled", "system_tags", "tag_ignore", "tag_loan", "tag_deposit"}
 
 

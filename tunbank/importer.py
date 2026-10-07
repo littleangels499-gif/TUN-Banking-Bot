@@ -372,16 +372,15 @@ def commit(conn, p: Preview, *, admin_id: str, note: str, snapshot_id, kind: str
             raise L.LedgerError("Opening-balance import is switched off.")
         if any(u < 0 for _, _, u in p.rows):
             raise L.LedgerError("Negative balances can only be loaded by a restore import after a deposit reset.")
-        dup = conn.execute("SELECT id FROM import_batches WHERE source_sha256=? AND kind='OPENING'",
-                           (p.file_sha256,)).fetchone()
+        dup = conn.execute("SELECT id FROM import_batches WHERE source_sha256=?", (p.file_sha256,)).fetchone()
         if dup:
             raise L.LedgerError(f"This exact file was already imported as batch #{dup['id']}.")
         already = conn.execute(
-            "SELECT nation_id, resource FROM ledger_entries WHERE entry_type='OPENING'").fetchall()
+            "SELECT nation_id, resource FROM ledger_entries WHERE entry_type IN ('OPENING','RESTORE')").fetchall()
         have = {(r["nation_id"], r["resource"]) for r in already}
         clash = [f"{n}/{r}" for n, r, _ in p.rows if (n, r) in have]
         if clash:
-            raise L.LedgerError("These nation/resource pairs already have an opening balance: "
+            raise L.LedgerError("These nation/resource pairs already have an imported balance: "
                                 + ", ".join(clash[:10]) + ". Opening balances can never be overwritten; "
                                 "use a documented /bank adjust instead (or a /deposit reset + restore).")
     else:
