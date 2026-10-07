@@ -19,7 +19,7 @@
 `transactions` · `resolvetx` · `review` · `records` (Excel exports)
 
 **`/bankset`** (Admin settings; Discord allows only 25 commands per group, so these live in their own group)
-`setrole` · `setaccess` / `access` · `setlogchannel` · `importopening` · `/deposit reset` · `/deposit restore` (see guide 13) · `config` · `seticon` / `icons` · `addbanker` / `removebanker` / `listbankers` · `limits` · `settransferlimit` ·
+`setrole` · `setaccess` / `access` · `setlogchannel` · `importopening` · `/deposit reset` · `conversionpanel` (see guide 13) · `config` · `seticon` / `icons` · `addbanker` / `removebanker` / `listbankers` · `limits` · `settransferlimit` ·
 `setdailylimit` · `setrolelimit` · `setnationlimit` · `requireapproval` · `backup` · `restorestage`
 
 `/chart vault · members · deposits · tax · nation` (staff charts)
@@ -57,7 +57,6 @@ approvals, security). 86 automated tests cover the accounting rules, failure cas
 crashes mid-transfer, tampering, deleted history) and the command logic.
 
 ## NOT built yet (honest list)
-* **Resource conversion panel**: not built. PnW has no conversion operation; waiting for a design decision (see HANDOVER_ASSESSMENT.md §6).
 * **Loans** (next): loan balances separate from deposits, `#loan` repayments applied interest → principal → excess to the member's deposit, overdue alerts.
 * **Warchest tiers and compliance** (after loans): fully configurable tiers, green/yellow/red status, alerts; never confiscates anything.
 * Automatic recovery of overdue loans from a member's **in-game nation** is NOT possible: the PnW API only lets the bot send money out of an alliance bank

@@ -71,9 +71,17 @@ def install():
         success = danger = primary = secondary = 1
 
     class _Button:
-        def __init__(self, label=None, emoji=None, style=None, disabled=False, **kw):
-            self.label, self.emoji, self.style, self.disabled = label, emoji, style, disabled
+        def __init__(self, label=None, emoji=None, style=None, disabled=False, custom_id=None, **kw):
+            self.label, self.emoji, self.style, self.disabled, self.custom_id = label, emoji, style, disabled, custom_id
             self.callback = None
+
+    class SelectOption:
+        def __init__(self, label="", value=None, **kw):
+            self.label, self.value = label, value
+
+    class Select:
+        def __init__(self, placeholder="", options=None, min_values=1, max_values=1, **kw):
+            self.placeholder, self.options, self.values, self.callback, self.disabled = placeholder, list(options or []), [], None, False
 
     class TextStyle:
         short = 1
@@ -117,7 +125,7 @@ def install():
         return deco
 
     ui = types.ModuleType("discord.ui")
-    ui.View, ui.Button, ui.button, ui.Modal, ui.TextInput = View, _Button, button, Modal, TextInput
+    ui.View, ui.Button, ui.button, ui.Modal, ui.TextInput, ui.Select = View, _Button, button, Modal, TextInput, Select
 
     class Interaction:
         pass
@@ -220,6 +228,10 @@ def install():
         def __init__(self, command_prefix=None, intents=None):
             self.tree = Tree()
             self.user = "bot"
+            self.views = []
+
+        def add_view(self, view):
+            self.views.append(view)
 
         def get_channel(self, i):
             return None
@@ -254,6 +266,7 @@ def install():
     d.Member = User
     d.Interaction = Interaction
     d.TextStyle = TextStyle
+    d.SelectOption = SelectOption
     d.ui, d.app_commands, d.ext = ui, ac, ext
     sys.modules.update({"discord": d, "discord.ui": ui, "discord.app_commands": ac, "discord.ext": ext,
                         "discord.ext.commands": commands, "discord.ext.tasks": tasks})

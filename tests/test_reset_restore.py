@@ -184,7 +184,7 @@ class ResetBase(unittest.TestCase):
         return self.call(self.deposit, "reset", user or self.admin, reason, phrase, **kw)
 
     def restore(self, csv_text, name="locutus.csv", **kw):
-        return self.call(self.deposit, "restore", self.admin, discord.Attachment(name, csv_text.encode()), "locutus export", **kw)
+        return self.call(self.bankset, "importopening", self.admin, discord.Attachment(name, csv_text.encode()), "locutus export", **kw)
 
 
 class TestDepositReset(ResetBase):
@@ -298,7 +298,7 @@ class TestDepositReset(ResetBase):
 
     def test_nothing_to_reset(self):
         self.reset()
-        self.call(self.deposit, "restore", self.admin, discord.Attachment("l.csv", b"nation_name,loan\nAlpha,5\n"), "loan only")
+        self.restore("nation_name,loan\nAlpha,5\n", name="l.csv")
         i = self.reset()
         self.assertEqual(self.count("deposit_resets"), 1)
         self.assertIn("no member balances", i.text())
@@ -324,7 +324,8 @@ class TestDepositReset(ResetBase):
     def test_help_lists_the_new_commands(self):
         from tunbank import cmds_help
         self.assertIn("deposit reset", cmds_help.CATALOG)
-        self.assertIn("deposit restore", cmds_help.CATALOG)
+        self.assertNotIn("deposit restore", cmds_help.CATALOG)           # one import command only: /bankset importopening
+        self.assertIn("bankset importopening", cmds_help.CATALOG)
 
 
 class TestRestoreAfterReset(ResetBase):
@@ -337,14 +338,15 @@ class TestRestoreAfterReset(ResetBase):
         self.fund_alice({"money": 1000000})
         self.pause()
 
-    def test_restore_without_a_reset_is_refused(self):
-        i = self.restore(self.LOCUTUS)
-        self.assertIn("/deposit reset", i.text())
+    def test_without_a_reset_the_same_command_is_a_plain_opening_import_that_refuses_negatives(self):
+        i = self.restore(self.LOCUTUS)                       # contains a negative amount
+        self.assertIn("BLOCKED", i.text())
+        self.assertIn("OPENING", i.text())
         self.assertEqual(self.count("import_batches"), 0)
 
     def test_restore_requires_admin(self):
         self.reset()
-        i = self.call(self.deposit, "restore", self.alice, discord.Attachment("a.csv", self.LOCUTUS.encode()), "n")
+        i = self.call(self.bankset, "importopening", self.alice, discord.Attachment("a.csv", self.LOCUTUS.encode()), "n")
         self.assertIn("Admin", i.text())
         self.assertEqual(self.count("import_batches"), 0)
 
@@ -387,10 +389,10 @@ class TestRestoreAfterReset(ResetBase):
     def test_restore_cannot_be_applied_twice(self):
         self.reset()
         self.restore(self.LOCUTUS)
-        i = self.restore(self.LOCUTUS.replace("5000000", "5000001"))
-        self.assertIn("no deposit reset waiting", i.text())
-        self.assertEqual(self.count("import_batches"), 1)
-        self.assertEqual(self.bal(713016)["money"], 500000000)
+        for text in (self.LOCUTUS, self.LOCUTUS.replace("5000000", "5000001").replace("-30000", "30000")):
+            self.restore(text)                               # same file again, or an edited copy: now a plain opening import
+            self.assertEqual(self.count("import_batches"), 1)
+            self.assertEqual(self.bal(713016)["money"], 500000000)   # never double-credited
 
     def test_restore_ledger_entries_cannot_be_forged(self):
         self.reset()
@@ -677,7 +679,7 @@ class TestMigration007(unittest.TestCase):
                 rows = [tuple(r)[:17] for r in c.execute("SELECT * FROM ledger_entries ORDER BY id")]
         finally:
             DBMOD.MIGRATIONS_DIR = real
-        self.assertEqual(db.migrate(backup_dir=d / "bk"), ["007_negative_balances_reset_restore_loans.sql"])
+        self.assertEqual(db.migrate(backup_dir=d / "bk"), ["007_negative_balances_reset_restore_loans.sql", "008_resource_conversion.sql"])
         self.assertEqual(len(list((d / "bk").glob("pre-migration-*.db"))), 1)
         with db.read() as c:
             self.assertEqual(L.verify_chain(c, "ledger_entries"), chain)
