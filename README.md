@@ -16,6 +16,11 @@ either a real PnW bank record or a documented opening balance.
 | 6 | [docs/06_BACKUP_RESTORE.md](docs/06_BACKUP_RESTORE.md) | Back up and restore the database |
 | 7 | [docs/07_FIRST_TIME_IN_DISCORD.md](docs/07_FIRST_TIME_IN_DISCORD.md) | Roles, log channel, importing opening balances, first tests |
 | 8 | [docs/08_COMMANDS_AND_STATUS.md](docs/08_COMMANDS_AND_STATUS.md) | Command list and exactly what is / isn't built yet |
+| 9 | [docs/09_BUTTONS_BULK_PRICES.md](docs/09_BUTTONS_BULK_PRICES.md) | Buttons, bulk transfers, market prices |
+| 10 | [docs/10_OFFSHORE.md](docs/10_OFFSHORE.md) | Offshore bank, which PnW credentials are needed, grants |
+| 12 | [docs/12_MEMBER_DEPOSITS_AND_AUDIT.md](docs/12_MEMBER_DEPOSITS_AND_AUDIT.md) | Depositing from Discord, deposit notes, the configuration audit log |
+| 11 | [docs/11_CONFIDENTIALITY_TAX_LINKING.md](docs/11_CONFIDENTIALITY_TAX_LINKING.md) | Who sees what, tax alerts, linking, deposits |
+| 13 | [docs/13_DEPOSIT_RESET_AND_RESTORE.md](docs/13_DEPOSIT_RESET_AND_RESTORE.md) | Reset member balances and restore them from the Locutus spreadsheet |
 
 ## Where things live (important)
 * **Code** → GitHub (this folder). Updating code never touches your data.

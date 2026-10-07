@@ -38,6 +38,9 @@ def main() -> int:
         print(f"\nDATABASE PROBLEM:\n{exc}\n")
         return 1
 
+    from tunbank.credentials import install_log_redaction
+    install_log_redaction(settings)       # keys can never appear in logs, even by accident
+
     from tunbank.bot import TunBankBot  # imported late so setup errors show first
 
     bot = TunBankBot(settings, db)

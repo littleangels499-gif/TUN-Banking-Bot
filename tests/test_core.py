@@ -28,7 +28,7 @@ PRICES = {r: Decimal("100") for r in M.NON_CASH}  # 100 cents (=$1.00) per unit
 
 
 def rec(id, sender, amounts, note="", receiver=ALLIANCE, sender_type=1, receiver_type=2, tax_id=0, **kw):
-    r = {"id": id, "date": "2026-09-01", "sender_id": sender, "sender_type": sender_type,
+    r = {"id": id, "date": __import__("datetime").date.today().isoformat(), "sender_id": sender, "sender_type": sender_type,
          "receiver_id": receiver, "receiver_type": receiver_type, "banker_id": 0, "note": note,
          "tax_id": tax_id}
     for res in M.RESOURCES:
@@ -47,16 +47,21 @@ class FakePnW:
         self.withdraw_calls = 0
         self.next_id = 5000
         self.bank_readable = True
+        self.off_recs = []          # records only listed in the offshore bank
+        self.off_holdings = {}
 
-    async def fetch_bankrecs(self):
+    def _is_off(self, bank):
+        return bank is not None and getattr(bank, "name", "main") == "offshore"
+
+    async def fetch_bankrecs(self, bank=None):
         if not self.bank_readable:
             raise PnWUncertain("down")
-        return list(self.recs)
+        return list(self.off_recs if self._is_off(bank) else self.recs)
 
-    async def fetch_bank_holdings(self):
+    async def fetch_bank_holdings(self, bank=None):
         if not self.bank_readable:
             raise PnWUncertain("down")
-        return dict(self.holdings)
+        return dict(self.off_holdings if self._is_off(bank) else self.holdings)
 
     async def fetch_alliance_members(self):
         return dict(self.members)
@@ -64,19 +69,52 @@ class FakePnW:
     async def fetch_prices(self):
         return dict(PRICES)
 
-    async def bank_withdraw(self, receiver, amounts, note):
+    # ---- member-key deposits (the PnW side, simulated)
+    key_owner = None
+    deposit_mode = "ok"            # ok | reject | timeout_sent | timeout_lost
+    deposit_calls = None
+
+    async def fetch_key_owner(self, api_key):
+        if self.key_owner is None or api_key not in self.key_owner:
+            raise PnWRejected("Invalid API key")
+        return self.key_owner[api_key]
+
+    async def bank_deposit(self, amounts, note, member_api_key, bot_key):
+        self.deposit_calls = (self.deposit_calls or []) + [{"amounts": dict(amounts), "note": note, "key": member_api_key, "bot": bot_key}]
+        if self.deposit_mode == "reject":
+            raise PnWRejected("Your API key is not authorized for this action (whitelisted access is off)")
+        nation = (self.key_owner or {}).get(member_api_key)
+        self.next_id += 1
+        r = rec(self.next_id, nation, {k: M.units_to_float(v) for k, v in amounts.items()}, note)
+        if self.deposit_mode == "timeout_lost":
+            raise PnWUncertain("timeout")
+        self.recs.append(r)
+        if self.deposit_mode == "timeout_sent":
+            raise PnWUncertain("timeout")
+        return r
+
+    async def fetch_tax_brackets(self):
+        return [{"id": "3", "bracket_name": "Core", "tax_rate": 25, "resource_tax_rate": 20},
+                {"id": "4", "bracket_name": "Newbies", "tax_rate": 10, "resource_tax_rate": 10}]
+
+    async def bank_withdraw(self, receiver, amounts, note, receiver_type=1, bank=None):
         self.withdraw_calls += 1
+        self.last_bank = getattr(bank, "name", "main")
         if self.withdraw_mode == "reject":
             raise PnWRejected("insufficient funds")
         self.next_id += 1
-        r = rec(self.next_id, ALLIANCE, {k: M.units_to_float(v) for k, v in amounts.items()}, note,
-                receiver=receiver, sender_type=2, receiver_type=1)
+        sender = getattr(bank, "alliance_id", ALLIANCE)
+        r = rec(self.next_id, sender, {k: M.units_to_float(v) for k, v in amounts.items()}, note,
+                receiver=receiver, sender_type=2, receiver_type=receiver_type)
+        target = self.off_recs if self._is_off(bank) else self.recs
         if self.withdraw_mode == "timeout_sent":
-            self.recs.append(r)
+            target.append(r)
             raise PnWUncertain("timeout")
         if self.withdraw_mode == "timeout_lost":
             raise PnWUncertain("timeout")
-        self.recs.append(r)
+        target.append(r)
+        if receiver_type == 2 and not self._is_off(bank):
+            self.off_recs.append(r)           # a main -> offshore transfer is listed by both banks
         return r
 
 
@@ -178,14 +216,56 @@ class TestDeposits(Base):
         with self.db.read() as c:
             self.assertEqual(c.execute("SELECT COUNT(*) FROM tax_records").fetchone()[0], 1)
 
-    def test_ambiguous_goes_to_review_and_non_member_too(self):
+    def test_only_non_members_and_non_nations_go_to_review(self):
         self.first_scan()
-        self.pnw.recs.append(rec(14, 1, {"money": 5}, "#grant"))
         self.pnw.recs.append(rec(15, 77, {"money": 5}))          # not an alliance member
-        self.pnw.recs.append(rec(16, 5, {"money": 5}, sender_type=2))  # sender is an alliance
+        self.pnw.recs.append(rec(16, 5, {"money": 5}, sender_type=2))  # sender is an alliance, not a nation
+        self.pnw.recs.append(rec(17, 1, {"money": 5}, "#ignore #loan"))  # contradictory explicit tags
         r = self.scan()
         self.assertEqual([o.kind for o in r.outcomes], ["REVIEW", "REVIEW", "REVIEW"])
         self.assertEqual(self.bal(1), {})
+
+    def test_deposit_note_rule_only_loan_and_ignore_are_exceptions(self):
+        """No note / #deposit / ANY other note from a member is a normal deposit. Only #loan and #ignore differ."""
+        self.first_scan()
+        cases = [
+            ("", "CREDIT"), ("#deposit", "CREDIT"), ("#DEPOSIT", "CREDIT"), ("my savings", "CREDIT"),
+            ("warchest money", "CREDIT"), ("deposit for later", "CREDIT"), ("#grant", "CREDIT"), ("#random-tag", "CREDIT"),
+            ("tax payment for the alliance", "CREDIT"),        # the WORD tax is not a tax record
+            ("please ignore this", "CREDIT"),                  # the word ignore without the # tag
+            ("#ignoreme", "CREDIT"),                           # a different tag, not #ignore
+            ("#loan", "LOAN"), ("#LOAN", "LOAN"), ("#loan repayment", "LOAN"), ("paying back #loan thanks", "LOAN"),
+            ("#ignore", "DONATION"), ("#Ignore", "DONATION"), ("donation #ignore", "DONATION"),
+        ]
+        for n, (note, expected) in enumerate(cases):
+            self.pnw.recs.append(rec(100 + n, 1, {"money": 10}, note))
+        r = self.scan()
+        got = {o.record_id: o.kind for o in r.outcomes}
+        for n, (note, expected) in enumerate(cases):
+            self.assertEqual(got[100 + n], expected, f"note {note!r}")
+        credited = sum(1 for _, e in cases if e == "CREDIT")
+        self.assertEqual(self.bal(1)["money"], credited * 1000)               # only the normal deposits became money
+        with self.db.read() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM pnw_records WHERE status='AWAITING_REVIEW'").fetchone()[0], 0)
+
+    def test_pnw_tax_id_beats_any_note_and_system_tags_are_configurable(self):
+        self.first_scan()
+        self.pnw.recs.append(rec(300, 1, {"money": 10}, "", tax_id=4))                  # PnW says: tax
+        self.pnw.recs.append(rec(301, 1, {"money": 10}, "my savings", tax_id=4))
+        self.pnw.recs.append(rec(302, 1, {"money": 10}, "#ignore", tax_id=4))
+        with self.db.tx() as c:
+            from tunbank.config import cfg_set
+            cfg_set(c, "system_tags", "#payroll, #system", "t")
+        self.pnw.recs.append(rec(303, 1, {"money": 10}, "#payroll"))                    # explicitly configured system type
+        self.pnw.recs.append(rec(304, 1, {"money": 10}, "#payrolls"))                   # not that tag: a normal deposit
+        r = self.scan()
+        got = {o.record_id: o.kind for o in r.outcomes}
+        self.assertEqual([got[300], got[301], got[302]], ["TAX", "TAX", "TAX"])
+        self.assertEqual(got[304], "CREDIT")
+        self.assertNotEqual(got[303], "CREDIT")
+        self.assertEqual(self.bal(1)["money"], 1000)
+
+
 
     def test_baseline_history_is_not_credited(self):
         self.pnw.recs.append(rec(1, 1, {"money": 999999}))
@@ -530,6 +610,96 @@ class TestMigrations(unittest.TestCase):
             self.assertEqual(chk.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             chk.close()
             db.close()
+
+
+class TestPrices(Base):
+    def test_partial_prices_still_value_every_priced_resource(self):
+        async def partial():
+            return {"coal": Decimal("4000"), "aluminum": Decimal("3000")}   # others missing
+        self.pnw.fetch_prices = partial
+        snap = self.run_async(self.prices.get(force=True))
+        self.assertIsNotNone(snap)
+        v = value_amounts({"money": 100, "coal": 100, "oil": 100}, snap)
+        self.assertEqual(v.parts["coal"], 100 * 4000)
+        self.assertEqual(v.missing, ["oil"])
+        self.assertIsNone(self.prices.last_error)
+
+    def test_failed_refresh_is_visible_and_falls_back_to_last_good(self):
+        good = self.run_async(self.prices.get(force=True))
+        self.assertIsNotNone(good)
+
+        async def boom():
+            raise PnWRejected('Cannot query field "x" on type "Tradeprice".')
+        self.pnw.fetch_prices = boom
+        again = self.run_async(self.prices.get(force=True))
+        self.assertEqual(again.id, good.id)                    # last saved prices
+        self.assertIn("Cannot query field", self.prices.last_error)
+
+    def _client_with(self, handler):
+        from tunbank.pnw import PnWClient
+        client = PnWClient(self.settings)
+        client.calls = []
+
+        async def fake_query(q, variables=None, retries=3, bank=None):
+            client.calls.append(q)
+            return handler(q)
+        client.query = fake_query
+        return client
+
+    def test_prices_use_the_current_paginated_schema(self):
+        """PnW's real error said: use `first`, and fields live under `data`. The query must be exactly that shape."""
+        def handler(q):
+            assert "limit" not in q, "old argument 'limit' must not be used"
+            assert "tradeprices(first: 25, page: 1)" in q and "data{" in q
+            newest = {"id": "9", "date": "2026-10-02", **{r: "3.5" for r in M.NON_CASH}}
+            older = {"id": "8", "date": "2026-10-01", **{r: "1" for r in M.NON_CASH}}
+            return {"tradeprices": {"paginatorInfo": {"lastPage": 1}, "data": [older, newest]}}
+        got = self.run_async(self._client_with(handler).fetch_prices())
+        self.assertEqual(got["coal"], Decimal("3.5"))
+        self.assertEqual(len(got), 11)
+
+    def test_prices_oldest_first_list_reads_the_last_page(self):
+        def handler(q):
+            if "page: 1" in q:
+                rows = [{"id": str(i), "date": f"2026-09-{i:02d}", **{r: "1" for r in M.NON_CASH}} for i in range(1, 4)]
+                return {"tradeprices": {"paginatorInfo": {"lastPage": 4}, "data": rows}}
+            assert "page: 4" in q
+            return {"tradeprices": {"data": [{"id": "99", "date": "2026-10-02", **{r: "7" for r in M.NON_CASH}}]}}
+        got = self.run_async(self._client_with(handler).fetch_prices())
+        self.assertEqual(got["oil"], Decimal("7"))
+
+    def test_prices_survive_one_renamed_field_and_no_paginator_info(self):
+        def handler(q):
+            if "paginatorInfo" in q:
+                raise PnWRejected('Cannot query field "lastPage" on type "PaginatorInfo".')
+            if "date" in q:
+                raise PnWRejected('Cannot query field "date" on type "Tradeprice".')
+            return {"tradeprices": {"data": [{"id": "5", **{r: "2" for r in M.NON_CASH}}]}}
+        client = self._client_with(handler)
+        got = self.run_async(client.fetch_prices())
+        self.assertEqual(got["steel"], Decimal("2"))
+
+    def test_prices_flow_into_the_central_market_value(self):
+        """The real client against PnW's current paginated shape -> PriceService -> value of a resource balance."""
+        def handler(q):
+            return {"tradeprices": {"paginatorInfo": {"lastPage": 1}, "data": [
+                {"id": "7", "date": "2026-10-02", **{r: "3000" for r in M.NON_CASH}}]}}
+        real = self._client_with(handler)
+        self.pnw.fetch_prices = real.fetch_prices
+        snap = self.run_async(self.prices.get(force=True))
+        self.assertIsNone(self.prices.last_error)
+        self.assertFalse(snap.stale)
+        v = value_amounts({"money": 100000, "coal": 200000, "aluminum": 100000}, snap)      # $1,000 cash + 2,000 coal + 1,000 aluminum
+        self.assertTrue(v.complete)
+        self.assertEqual(v.total_cents, 100000 + 200000 * 3000 + 100000 * 3000)
+        with self.db.read() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()[0], 1)
+
+    def test_prices_failure_is_reported_never_silently_zero(self):
+        def handler(q):
+            raise PnWRejected("Unknown argument \"first\"")
+        with self.assertRaises(PnWRejected):
+            self.run_async(self._client_with(handler).fetch_prices())
 
 
 class TestValuation(unittest.TestCase):

@@ -71,13 +71,36 @@ def install():
         success = danger = primary = secondary = 1
 
     class _Button:
-        pass
+        def __init__(self, label=None, emoji=None, style=None, disabled=False, **kw):
+            self.label, self.emoji, self.style, self.disabled = label, emoji, style, disabled
+            self.callback = None
+
+    class TextStyle:
+        short = 1
+        paragraph = 2
+
+    class TextInput:
+        def __init__(self, label="", placeholder="", required=True, max_length=None, style=None, **kw):
+            self.label, self.placeholder, self.required, self.value = label, placeholder, required, ""
+
+    class Modal:
+        def __init__(self, title=""):
+            self.title, self.children = title, []
+
+        def add_item(self, item):
+            self.children.append(item)
 
     class View:
         def __init__(self, timeout=None):
             self.timeout = timeout
             self.children = [types.SimpleNamespace(disabled=False), types.SimpleNamespace(disabled=False)]
             self._evt = asyncio.Event()
+
+        def add_item(self, item):
+            self.children.append(item)
+
+        def clear_items(self):
+            self.children = []
 
         def stop(self):
             self._evt.set()
@@ -94,7 +117,7 @@ def install():
         return deco
 
     ui = types.ModuleType("discord.ui")
-    ui.View, ui.Button, ui.button = View, _Button, button
+    ui.View, ui.Button, ui.button, ui.Modal, ui.TextInput = View, _Button, button, Modal, TextInput
 
     class Interaction:
         pass
@@ -106,8 +129,8 @@ def install():
         pass
 
     class Command:
-        def __init__(self, callback, name):
-            self.callback, self.name = callback, name
+        def __init__(self, callback, name, description=""):
+            self.callback, self.name, self.description = callback, name, description
             self.autocompletes = {}
 
         def autocomplete(self, param):
@@ -140,7 +163,7 @@ def install():
                     raise ValueError(f"bad command name {n}")
                 if len(description) > 100:
                     raise ValueError(f"description too long for /{self.name} {n}: {len(description)}")
-                self.commands[n] = Command(fn, n)
+                self.commands[n] = Command(fn, n, description)
                 return self.commands[n]
             return deco
 
@@ -174,9 +197,13 @@ def install():
         def command(self, name=None, description=""):
             def deco(fn):
                 self.top = getattr(self, "top", {})
-                self.top[name or fn.__name__] = fn
-                return fn
+                cmd = Command(fn, name or fn.__name__, description)
+                self.top[cmd.name] = cmd
+                return cmd
             return deco
+
+        def get_commands(self):
+            return list(self.cmds.values()) + list(getattr(self, "top", {}).values())
 
         def add_command(self, g):
             if g.name in self.cmds:
@@ -226,6 +253,7 @@ def install():
     d.Attachment, d.Role, d.User, d.TextChannel, d.ButtonStyle = Attachment, Role, User, TextChannel, ButtonStyle
     d.Member = User
     d.Interaction = Interaction
+    d.TextStyle = TextStyle
     d.ui, d.app_commands, d.ext = ui, ac, ext
     sys.modules.update({"discord": d, "discord.ui": ui, "discord.app_commands": ac, "discord.ext": ext,
                         "discord.ext.commands": commands, "discord.ext.tasks": tasks})
@@ -265,7 +293,11 @@ class FakeInteraction:
             self.i.sent.append({"content": content, **kw})
 
         async def edit_message(self, **kw):
-            pass
+            self.i.edited = kw
+
+        async def send_modal(self, modal):
+            self._done = True
+            self.i.modal = modal
 
     class _Follow:
         def __init__(self, i):
@@ -286,6 +318,16 @@ class FakeInteraction:
 
     async def original_response(self):
         return FakeMessage()
+
+    async def edit_original_response(self, **kw):
+        self.edited = kw
+
+    # --- test helpers: press a button / submit a form
+    def view(self):
+        for m in reversed(self.sent):
+            if m.get("view") is not None:
+                return m["view"]
+        return None
 
     # helpers for assertions
     def text(self):
