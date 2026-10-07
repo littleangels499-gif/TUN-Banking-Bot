@@ -33,3 +33,16 @@ in the ECON log. Staff without the treasury permission also get messages that sa
 
 ## Depositing
 See docs/12: members can deposit from Discord with their own API key, or follow the guided steps.
+
+
+---
+
+## Where tax records come from (important)
+PnW keeps tax collections in their own list (`taxrecs`), separate from ordinary bank records. The bot reads that list on every scan,
+about 14 days at a time, so **nothing is set up per nation**: every tax record already says which bracket it came from, the brackets and their
+rates are read live from PnW (`/tax brackets`), and `/tax profile` shows each member's bracket and one line per turn with the exact cash paid.
+
+* The first time the bot reads the tax list on a database, the older turns are stored but **not announced**; only new turns are posted.
+* A tax record is never treated as a deposit, even if PnW left its tax id empty.
+* If PnW refuses the tax list, deposits keep working and `/tax sync` tells you exactly what PnW said.
+* To receive the per-turn summary you still need a channel: `/bankset setlogchannel` (kind: Tax alerts), and `/bankset setaccess` to give a role `bank_view_tax`.

@@ -51,3 +51,9 @@ Note: `/deposit restore` was merged into the existing `/bankset importopening` (
 * A deduction that creates a debt needs two-person approval; a deduction within the balance does not (as before).
 
 * Conversion has no fee/spread; the alliance carries price risk. A member can only receive what the alliance really owns (live bank check).
+
+## 9. Beyond the four requests
+* **Tax (bug fixed):** PnW exposes tax collections in a separate `taxrecs` list; the bot only asked for `bankrecs`, so tax tables were always empty. Now fixed (see guide 11). Brackets are read from PnW, nothing per nation.
+* **Loans: built** on a simple explicit model (flat interest, interest → principal → excess to deposit, overdue alert). See guide 14. Open choices: flat vs daily-accruing interest; whether `/loan add` should also send the money.
+* **Warchest/compliance: not built.** The only spec is "fully configurable tiers, green/yellow/red status, alerts, never confiscates". To build it I need: what a member's required warchest is based on (per city? score? military? a fixed amount?), what counts toward it (deposit, locked funds, in-nation resources — the bot can only see the bank), and which resources.
+* Migrations added: 007 (negatives/reset/restore/loan import), 008 (conversion), 009 (loans). Ledger entry types now live: RESET, RESTORE, CONVERSION, LOAN_DEDUCTION.

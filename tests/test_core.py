@@ -58,6 +58,14 @@ class FakePnW:
             raise PnWUncertain("down")
         return list(self.off_recs if self._is_off(bank) else self.recs)
 
+    async def fetch_taxrecs(self, bank=None):
+        if getattr(self, "taxrecs_error", None):
+            raise PnWRejected(self.taxrecs_error)
+        return [dict(r, _taxrec=True) for r in getattr(self, "taxrecs", [])]
+
+    async def fetch_nation_tax_id(self, nation_id):
+        return getattr(self, "nation_tax_ids", {}).get(nation_id)
+
     async def fetch_bank_holdings(self, bank=None):
         if not self.bank_readable:
             raise PnWUncertain("down")
