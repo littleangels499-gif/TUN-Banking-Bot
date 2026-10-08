@@ -151,6 +151,59 @@ class TestTaxFeed(unittest.TestCase):
         self.assertIn("$1,000.00", out)
         self.assertIn("$1,200.00", out)
 
+    def test_tax_feed_records_whose_sender_is_not_typed_as_a_nation_are_still_tax(self):
+        """The real-world bug: PnW's tax records failed the 'sender is a nation' check and went to ECON review."""
+        self.scan()
+        odd = []
+        for i, st in enumerate((0, None, 2, 3)):
+            r = self.tax_rec(8900 + i, 1 + i % 2, 1000.0, "2026-10-02 14:00:0%d" % i, tax_id=0)
+            r["sender_type"] = st
+            r["receiver_type"] = None
+            odd.append(r)
+        self.pnw.taxrecs = odd
+        r = self.scan()
+        self.assertEqual({o.kind for o in r.outcomes if o.record_id}, {"TAX"})
+        self.assertEqual(self.count("tax_records"), 4)
+        with self.db.read() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM pnw_records WHERE status='AWAITING_REVIEW'").fetchone()[0], 0)
+            self.assertEqual(L.get_balances(c, 1, "AVAILABLE"), {})
+        self.assertNotIn("needs ECON review", self.econ_log.text())
+
+    def test_tax_records_already_stuck_in_review_are_corrected_without_flooding_the_channel(self):
+        from tunbank import bankrec as B
+        self.scan()
+        stuck = [self.tax_rec(8950 + i, 1 + i % 3, 500.0, "2026-10-01 10:00:0%d" % i) for i in range(5)]
+        with self.db.tx() as c:                                  # exactly what the earlier version stored
+            for r in stuck:
+                r2 = dict(r, sender_type=0)
+                B.insert_record(c, B.normalize(r2), direction="IN", classification="REVIEW", status="AWAITING_REVIEW")
+        with self.db.read() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM pnw_records WHERE status='AWAITING_REVIEW'").fetchone()[0], 5)
+        self.pnw.taxrecs = [dict(r, sender_type=0) for r in stuck]
+        self.scan()
+        with self.db.read() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM pnw_records WHERE status='AWAITING_REVIEW'").fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM pnw_records WHERE classification='TAX' AND status='NO_CREDIT'").fetchone()[0], 5)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM audit_log WHERE action='TAX_RECLASSIFIED'").fetchone()[0], 1)
+            self.assertEqual(L.get_balances(c, 1, "AVAILABLE"), {})
+        self.assertEqual(self.count("tax_records"), 5)
+        self.assertEqual(self.tax_chan.sent, [])                  # old turns: stored, not announced
+        self.scan()                                               # a second scan changes nothing
+        self.assertEqual(self.count("tax_records"), 5)
+
+    def test_one_summary_per_turn_for_all_nations_together(self):
+        self.give("bank_view_tax", 77)
+        self.scan()
+        self.pnw.taxrecs = [dict(self.tax_rec(9000 + i, 1 + i % 2, 1000.0 * (i + 1), "2026-10-03 12:00:0%d" % i), sender_type=0)
+                            for i in range(6)]
+        self.scan()
+        self.assertEqual(len(self.tax_chan.sent), 1)              # six nations, ONE message
+        text = self.tax_chan.text()
+        self.assertIn("Turn Complete", text)
+        self.assertIn("12:00 UTC", text)
+        self.assertIn("$21,000.00", text)                         # 1+2+3+4+5+6 thousand, all nations added together
+        self.assertNotIn("Alpha", text)                           # totals only: no per-member list
+
     def test_the_real_client_asks_for_taxrecs_and_marks_what_it_gets(self):
         class S:
             class main:

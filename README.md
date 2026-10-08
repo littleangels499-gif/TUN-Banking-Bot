@@ -20,6 +20,7 @@ either a real PnW bank record or a documented opening balance.
 | 10 | [docs/10_OFFSHORE.md](docs/10_OFFSHORE.md) | Offshore bank, which PnW credentials are needed, grants |
 | 12 | [docs/12_MEMBER_DEPOSITS_AND_AUDIT.md](docs/12_MEMBER_DEPOSITS_AND_AUDIT.md) | Depositing from Discord, deposit notes, the configuration audit log |
 | 11 | [docs/11_CONFIDENTIALITY_TAX_LINKING.md](docs/11_CONFIDENTIALITY_TAX_LINKING.md) | Who sees what, tax alerts, linking, deposits |
+| 15 | [docs/15_RECONCILIATION.md](docs/15_RECONCILIATION.md) | Reconciliation statuses: resource level, net position, liquidity |
 | 14 | [docs/14_LOANS.md](docs/14_LOANS.md) | Loans: record, repay (#loan), deduct, write off, overdue alerts |
 | 13 | [docs/13_DEPOSIT_RESET_AND_RESTORE.md](docs/13_DEPOSIT_RESET_AND_RESTORE.md) | Reset member balances and restore them from the Locutus spreadsheet |
 

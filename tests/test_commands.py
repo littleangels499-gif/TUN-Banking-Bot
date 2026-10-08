@@ -252,7 +252,7 @@ class Cmd(unittest.TestCase):
     def test_reconcile_and_emergency_lock_commands(self):
         self.fund_alice({"money": 1000000})
         i = self.call(self.bank, "reconcile", self.admin)
-        self.assertIn("Reconciliation", i.text())
+        self.assertIn("RECONCILIATION", i.text())
         ch = discord.app_commands.Choice("on", "on")
         self.call(self.ledger, "emergencylock", self.admin, ch, "test drill")
         i = self.call(self.bank, "withdrawself", self.alice, "money=1")
@@ -272,7 +272,7 @@ class Cmd(unittest.TestCase):
         with self.db.read() as c:
             self.assertEqual(R.check_chains(c), [])
         i = self.call(self.bank, "reconcile", self.admin)
-        self.assertIn("Reconciliation OK", i.text(), i.text())
+        self.assertIn("NORMAL", i.text(), i.text())
 
     def test_nation_fields_accept_id_name_link_username_and_mention(self):
         self.fund_alice({"money": 1000})
@@ -477,7 +477,7 @@ class Cmd(unittest.TestCase):
         # vault
         view = self.call(self.bank, "holdings", self.admin).view()
         self.assertEqual(list(view.handlers), ["Chart", "Reconcile now", "Review queue", "Export balances", "Refresh"])
-        self.assertIn("Reconciliation", self.press(view, "Reconcile now", self.admin).text())
+        self.assertIn("RECONCILIATION", self.press(view, "Reconcile now", self.admin).text())
         self.assertTrue(any(m.get("file") for m in self.press(view, "Export balances", self.admin).sent))
         self.assertTrue(any(m.get("file") for m in self.press(view, "Chart", self.admin).sent))
         self.assertIn("Nothing is waiting", self.press(view, "Review queue", self.admin).text())
@@ -1118,12 +1118,14 @@ class OffshoreCmd(Cmd):
         with self.db.tx() as c:
             res = R.run_checks(c, holdings={"money": 150000000}, snapshot_id=None, triggered_by="t")
         self.assertNotIn("LEDGER_EXCEEDS_BANK", {f["kind"] for f in res["findings"]})
-        # ownership vs physical: members own $1M; if BOTH banks together hold less, that is critical
+        # ownership vs physical: members own $1M; if BOTH banks together hold less, the overall position is negative:
+        # that needs ECON's attention (RECONCILIATION REQUIRED) but is not an integrity failure, so no emergency lock
         i = self.call(self.bank, "reconcile", self.admin)
         self.pnw.holdings, self.pnw.off_holdings = {"money": 10}, {"money": 10}
         i = self.call(self.bank, "reconcile", self.admin)
         with self.db.read() as c:
-            self.assertTrue(L.integrity_state(c)["emergency_lock"])
+            self.assertEqual(L.integrity_state(c)["state"], "RECONCILIATION_REQUIRED")
+            self.assertFalse(L.integrity_state(c)["emergency_lock"])
 
     def test_offshore_status_screen_and_export(self):
         self.seed()

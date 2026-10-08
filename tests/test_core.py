@@ -504,15 +504,18 @@ class TestAdjustAndReconcile(Base):
                                actor="9", approval_id=ap)
         self.assertEqual(self.bal(1)["money"], 100)
 
-    def test_ledger_larger_than_bank_locks(self):
+    def test_overall_shortfall_needs_reconciliation_but_never_locks_the_bank(self):
         self.first_scan()
         self.pnw.recs.append(rec(60, 1, {"money": 1000000}))
         self.scan()
         with self.db.tx() as c:
             res = R.run_checks(c, holdings={"money": 5}, snapshot_id=None, triggered_by="t")
-        self.assertIn("LEDGER_EXCEEDS_BANK", {f["kind"] for f in res["findings"]})
+        kinds = {f["kind"] for f in res["findings"]}
+        self.assertIn("NET_POSITION_SHORTFALL", kinds)
+        self.assertNotIn("LEDGER_EXCEEDS_BANK", kinds)
+        self.assertEqual(res["status"], "RECONCILIATION_REQUIRED")
         with self.db.read() as c:
-            self.assertEqual(L.integrity_state(c)["state"], "EMERGENCY_LOCK")
+            self.assertFalse(L.integrity_state(c)["emergency_lock"])
 
     def test_clean_books_reconcile_ok(self):
         self.first_scan()

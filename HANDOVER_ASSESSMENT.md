@@ -57,3 +57,9 @@ Note: `/deposit restore` was merged into the existing `/bankset importopening` (
 * **Loans: built** on a simple explicit model (flat interest, interest → principal → excess to deposit, overdue alert). See guide 14. Open choices: flat vs daily-accruing interest; whether `/loan add` should also send the money.
 * **Warchest/compliance: not built.** The only spec is "fully configurable tiers, green/yellow/red status, alerts, never confiscates". To build it I need: what a member's required warchest is based on (per city? score? military? a fixed amount?), what counts toward it (deposit, locked funds, in-nation resources — the bot can only see the bank), and which resources.
 * Migrations added: 007 (negatives/reset/restore/loan import), 008 (conversion), 009 (loans). Ledger entry types now live: RESET, RESTORE, CONVERSION, LOAN_DEDUCTION.
+
+## 10. Reconciliation redesign (after your report)
+* `LEDGER_EXCEEDS_BANK` (CRITICAL → automatic lock for any single-resource shortfall) is replaced by three separate checks: resource level (WARNING), overall net market position (RECONCILIATION REQUIRED only if negative), and per-withdrawal liquidity (unchanged). Emergency lock is now reserved for integrity failures. See guide 15.
+* Member balances are compared net (negatives subtract). The conservative "alliance-owned = bank − positive claims" figure is still what conversions and alliance payouts use, so they can never spend what members are owed.
+* Trade-off you chose: a loss in one resource that is offset by surplus in others is a WARNING, not a lock. Withdrawals stay safe because each one needs the paying bank to physically hold the resource.
+* Tax records now bypass the "sender is a nation" check (they were being sent to ECON review); stored review items are corrected on the next scan.
