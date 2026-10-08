@@ -208,6 +208,12 @@ class AlertService:
         except Exception:  # noqa: BLE001
             log.exception("could not write alert_log")
 
+    async def trade(self, card: Card):
+        """Trade-rule alerts go to the trade-alert channel (or the ECON log when none is set)."""
+        with self.db.read() as conn:
+            chan = cfg_get(conn, "trade_alert_channel_id")
+        await self.econ(card, channel_id=chan if chan.isdigit() else None)
+
     async def tax(self, card: Card):
         """The tax-turn summary goes to the tax alert channel (or the ECON log when none is set)."""
         with self.db.read() as conn:

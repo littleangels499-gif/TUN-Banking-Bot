@@ -48,6 +48,23 @@ class MemberDepositService:
         row = CR.get_row(conn, nation_id)
         return bool(row and not row["disabled"] and str(row["discord_id"]) == str(discord_id))
 
+    async def holdings(self, *, nation_id: int, discord_id) -> dict:
+        """The member's own nation holdings, read with THEIR key (for 'Deposit Excess'). Raises CredentialError /
+        PnWRejected / PnWUncertain with messages that never contain the key."""
+        def load():
+            with self.db.tx() as conn:
+                key = CR.load_for_member(conn, self.crypto, nation_id=nation_id, discord_id=discord_id)
+                if key:
+                    conn.execute("UPDATE member_credentials SET last_used_at=? WHERE nation_id=?", (now_iso(), nation_id))
+                return key
+        key = await asyncio.to_thread(load)
+        if not key:
+            raise CR.CredentialError("You haven't set up direct deposits (or your key was removed). Use /nation setkey first.")
+        try:
+            return await self.pnw.fetch_nation_holdings(key)
+        except (PnWRejected, PnWUncertain) as exc:
+            raise type(exc)(CR.redact(exc)) from None
+
     # --------------------------------------------------------------------- start
     async def start(self, *, nation_id: int, discord_id, amounts: dict, idem: str, value_cents=None, snapshot_id=None) -> dict:
         """Returns {status, message, deposit_id, outcomes}. status: CREDITED, SENT, FAILED, UNCERTAIN, BLOCKED."""

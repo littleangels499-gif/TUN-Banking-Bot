@@ -21,11 +21,11 @@ TITLES = {
     "ICON": "⚙️ Display Setting Changed", "PERMISSION": "🔑 Permission Changed", "LIMIT": "📏 Limit Changed",
     "LINK": "🔗 Nation Link Changed", "ACCOUNTING": "🧮 Manual Balance Adjustment", "SECURITY": "🛡️ Security Action",
     "CLASSIFICATION": "🏷️ Manual Classification", "IMPORT": "📥 Opening Balances / Migration", "POLICY": "🧾 Tax Policy Changed",
-    "ENVIRONMENT": "🖥️ Startup Configuration Changed", "CREDENTIAL": "🔐 Member Credential Changed", "RESTORE": "♻️ Database Restore", "RESET": "🧨 Deposit Reset",
+    "ENVIRONMENT": "🖥️ Startup Configuration Changed", "CREDENTIAL": "🔐 Member Credential Changed", "RESTORE": "♻️ Database Restore", "RESET": "🧨 Deposit Reset", "TRADE": "🔎 Trade Monitor Changed",
 }
 FINANCIAL_KEYS = {"approval_threshold_value", "offshore_access", "offshore_keep_in_main", "grant_min_level", "large_credit_value",
                   "self_withdraw_enabled", "econ_locked_withdraw_enabled", "require_alliance_member_deposit", "opening_import_allowed",
-                  "net_worth_withdraw_limit", "net_worth_include_locked", "conversion_enabled", "conversion_max_value",
+                  "net_worth_withdraw_limit", "net_worth_include_locked", "conversion_enabled", "conversion_max_value", 
                   "member_deposit_enabled", "system_tags", "tag_ignore", "tag_loan", "tag_deposit"}
 
 
@@ -39,6 +39,8 @@ def category_for_setting(key: str) -> str:
         return "ICON"
     if key.endswith("_channel_id"):
         return "CHANNEL"
+    if key.startswith("trade_"):
+        return "TRADE"
     return "FINANCIAL" if key in FINANCIAL_KEYS else "CONFIG"
 
 

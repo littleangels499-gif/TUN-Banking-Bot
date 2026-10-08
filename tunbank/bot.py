@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_convert, cmds_deposit, cmds_grant, cmds_loan, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
+from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_convert, cmds_deposit, cmds_grant, cmds_loan, cmds_panel, cmds_trade, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
 from . import ledger as L
 from .alerts import AlertService
 from .credentials import Crypto
@@ -42,6 +42,8 @@ class TunBankBot(commands.Bot):
         self.svc.offshore = OffshoreService(db, pnw, prices, settings)
         self.svc.crypto = Crypto(settings.credential_key)
         self.svc.deposits = MemberDepositService(db, pnw, prices, settings, self.svc.crypto, self.svc.scanner)
+        from .trademon import TradeMonitor
+        self.svc.trade_monitor = TradeMonitor(db, pnw, prices, self.svc.alerts)
         self._ready_once = False
 
     async def setup_hook(self):
@@ -59,6 +61,7 @@ class TunBankBot(commands.Bot):
         grant = app_commands.Group(name="grant", description="Alliance-approved grants (ECON)")
         deposit = app_commands.Group(name="deposit", description="Deposit reset and restoration (Admin)")
         loan = app_commands.Group(name="loan", description="Loans: money members owe the alliance")
+        trade = app_commands.Group(name="trade", description="Trade monitoring: alerts and rules (ECON)")
         cmds_member.register(bank, nation, self.svc)
         cmds_econ.register(bank, self.svc)            # must come first: defines svc.do_reconcile
         cmds_admin.register(bank, bankset, ledger, self.svc)
@@ -74,9 +77,12 @@ class TunBankBot(commands.Bot):
         cmds_deposit.register(deposit, self.svc)
         cmds_convert.register(bankset, self.svc)
         cmds_loan.register(loan, self.svc)
+        cmds_panel.register(bankset, self.svc)
+        cmds_trade.register(trade, self.svc)
+        self.add_view(self.svc.panel_view())                           # the banking panel keeps working after restarts
         self.add_view(cmds_convert.ConversionPanelView(self.svc))     # the panel button keeps working after restarts
         self.tree.on_error = self.on_tree_error
-        for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit, loan):
+        for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit, loan, trade):
             self.tree.add_command(g)
         if self.settings.guild_id:
             guild = discord.Object(id=self.settings.guild_id)
@@ -138,9 +144,10 @@ class TunBankBot(commands.Bot):
         self.recon_loop.start()
         self.backup_loop.start()
         self.audit_loop.start()
+        self.trade_loop.start()
 
     async def close(self):
-        for t in (self.scan_loop, self.recon_loop, self.backup_loop, self.audit_loop):
+        for t in (self.scan_loop, self.recon_loop, self.backup_loop, self.audit_loop, self.trade_loop):
             t.cancel()
         await self.svc.pnw.close()
         self.db.close()
@@ -166,6 +173,14 @@ class TunBankBot(commands.Bot):
             await self.svc.alerts.flush_events()
         except Exception:  # noqa: BLE001
             log.exception("scan loop error")
+
+    @tasks.loop(seconds=30)
+    async def trade_loop(self):
+        """Watches completed trades; only does anything when the configured interval has passed."""
+        try:
+            await self.svc.trade_monitor.poll_if_due()
+        except Exception:  # noqa: BLE001
+            log.exception("trade monitor error")
 
     @tasks.loop(seconds=60)
     async def recon_loop(self):
@@ -212,6 +227,7 @@ class TunBankBot(commands.Bot):
     @scan_loop.before_loop
     @recon_loop.before_loop
     @backup_loop.before_loop
+    @trade_loop.before_loop
     @audit_loop.before_loop
     async def _wait(self):
         await self.wait_until_ready()

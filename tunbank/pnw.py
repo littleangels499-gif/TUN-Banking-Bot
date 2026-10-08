@@ -150,6 +150,61 @@ class PnWClient:
                 "alliance with bank-view permission.")
         return recs
 
+    # ------------------------------------------------------------------ trades (monitoring only)
+    _TRADE_CORE = "id type date date_accepted sender_id receiver_id offer_resource offer_amount buy_or_sell price accepted"
+    _TRADE_NESTED = " sender{ id nation_name alliance_id alliance{ id name } } receiver{ id nation_name alliance_id alliance{ id name } }"
+    _nested_trades = True
+
+    async def fetch_accepted_trades(self, pages: int = 2, first: int = 100) -> list[dict]:
+        """The most recent ACCEPTED trades (completed transactions), newest first. Each has both parties; nation and
+        alliance details are filled in even if PnW refuses the nested fields."""
+        out: list[dict] = []
+        for page in range(1, max(1, pages) + 1):
+            fields = self._TRADE_CORE + (self._TRADE_NESTED if self._nested_trades else "")
+            q = ("query($first:Int,$page:Int){ trades(accepted:true, first:$first, page:$page, "
+                 "orderBy:[{column:DATE_ACCEPTED, order:DESC}]){ data{ " + fields + " } paginatorInfo{ hasMorePages } } }")
+            try:
+                data = await self.query(q, {"first": first, "page": page})
+            except PnWRejected as exc:
+                if self._nested_trades and "Cannot query field" in str(exc):
+                    self._nested_trades = False                         # fall back to looking the nations up ourselves
+                    return await self.fetch_accepted_trades(pages, first)
+                raise
+            block = data.get("trades") or {}
+            out += block.get("data") or []
+            if not (block.get("paginatorInfo") or {}).get("hasMorePages"):
+                break
+        if not self._nested_trades and out:
+            ids = sorted({int(t[k]) for t in out for k in ("sender_id", "receiver_id") if t.get(k)})
+            info = await self.fetch_nations_info(ids)
+            for t in out:
+                t["sender"], t["receiver"] = info.get(int(t.get("sender_id") or 0)), info.get(int(t.get("receiver_id") or 0))
+        return out
+
+    async def fetch_nations_info(self, ids: list[int]) -> dict:
+        """{nation_id: {id, nation_name, alliance_id, alliance{id,name}}} for any nations."""
+        out: dict = {}
+        for i in range(0, len(ids), 50):
+            chunk = ids[i:i + 50]
+            q = ("query($id:[Int],$n:Int){ nations(id:$id, first:$n){ data{ id nation_name alliance_id alliance{ id name } } } }")
+            data = await self.query(q, {"id": chunk, "n": len(chunk)})
+            for r in data.get("nations", {}).get("data") or []:
+                out[int(r["id"])] = r
+        return out
+
+    async def find_alliance(self, text: str) -> list[dict]:
+        """An alliance by id or by name -> [{id, name}] (several when a name is ambiguous)."""
+        t = str(text).strip().lstrip("#")
+        if t.isdigit():
+            data = await self.query("query($id:[Int]){ alliances(id:$id, first:1){ data{ id name } } }", {"id": [int(t)]})
+        else:
+            data = await self.query("query($name:[String]){ alliances(name:$name, first:10){ data{ id name } } }", {"name": [t]})
+        rows = data.get("alliances", {}).get("data") or []
+        if not t.isdigit():
+            exact = [r for r in rows if (r.get("name") or "").lower() == t.lower()]
+            rows = exact or rows
+        return [{"id": int(r["id"]), "name": r.get("name") or ""} for r in rows]
+
     async def fetch_taxrecs(self, bank=None) -> list[dict]:
         """The alliance's TAX collections (about 14 days). PnW keeps these in their own field, `taxrecs`, separate from
         `bankrecs`: asking only for bankrecs never returns a single tax record. Every record returned is marked
@@ -300,6 +355,27 @@ class PnWClient:
             raise
         nation = ((data.get("me") or {}).get("nation")) or {}
         return int(nation["id"]) if nation.get("id") not in (None, "") else None
+
+    async def fetch_nation_holdings(self, member_api_key: str) -> dict:
+        """What the nation that owns this key is holding right now ({resource: units}). Used for 'Deposit Excess'.
+        The key is only ever sent to PnW; errors are returned without it."""
+        from .config import BankAccess
+
+        probe = BankAccess("member", self.s.alliance_id, member_api_key, None, None)
+        fields = " ".join(M.RESOURCES)
+        data = await self.query("{ me { nation { id " + fields + " } } }", bank=probe)
+        nation = ((data.get("me") or {}).get("nation")) or {}
+        if not nation:
+            raise PnWRejected("PnW did not return your nation's holdings for this key.")
+        out = {}
+        for r in M.RESOURCES:
+            try:
+                u = M.to_units(nation.get(r))
+            except M.AmountError:
+                u = 0
+            if u > 0:
+                out[r] = u
+        return out
 
     async def bank_deposit(self, amounts: dict, note: str, member_api_key: str, bot_key: str) -> dict:
         """Deposit from the nation that owns `member_api_key` into ITS OWN alliance bank (the mutation has no

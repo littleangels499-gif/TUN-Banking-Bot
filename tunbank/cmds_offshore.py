@@ -173,4 +173,18 @@ def register(bank: app_commands.Group, svc: Services):
         await reply(interaction, card=out, view=ActionView(interaction.user.id, [("Cancel this plan", "🚫", "danger", b_cancel)]))
         await svc.alerts.econ(out)
 
+    async def offshore_move(interaction):
+        """The panel's 'Offshore Funds' button: same permission rule (offshore_access) and the same transfer code as /bank offshore."""
+        if not off or not off.enabled:
+            return await interaction.response.send_message("Offshore transfers are not set up for this bank.", ephemeral=True)
+        if not await allowed(interaction):
+            return                                              # allowed() already told them why
+
+        async def done(i2, amt, why):
+            await offshore.callback(i2, amt, why)
+        await open_form(interaction, "Move funds to the offshore", [
+            dict(label="What to move", placeholder="e.g. money=5b coal=100k", max=200),
+            dict(label="Why", required=False, max=150)], done)
+
     svc.actions["offshore"] = offshore.callback
+    svc.actions["offshore_move"] = offshore_move

@@ -379,6 +379,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
 
     CHANNEL_KINDS = [app_commands.Choice(name="ECON log (financial alerts)", value="econ_log_channel_id"),
                      app_commands.Choice(name="Tax alerts (one summary per turn)", value="tax_alert_channel_id"),
+                     app_commands.Choice(name="Trade alerts (private)", value="trade_alert_channel_id"),
                      app_commands.Choice(name="Configuration audit (private)", value="config_audit_channel_id")]
 
     @bankset.command(name="setlogchannel", description="Admin: set the ECON log channel or the tax-alert channel")
@@ -395,11 +396,13 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 cfg_set(conn, key, str(channel.id), uid(interaction))
                 L.audit(conn, uid(interaction), "CONFIG_CHANGED", key, {"value": channel.id})
         await asyncio.to_thread(do)
-        label = {"tax_alert_channel_id": "Tax alert", "config_audit_channel_id": "Configuration audit"}.get(key, "ECON log")
+        label = {"tax_alert_channel_id": "Tax alert", "trade_alert_channel_id": "Trade alert", "config_audit_channel_id": "Configuration audit"}.get(key, "ECON log")
         await reply(interaction, f"{label} channel set to {channel.mention}. Discord decides who can read it, so keep it private.")
         card = A.Card(f"{label} channel connected", "Alerts will appear here.", A.GREEN)
         if key == "tax_alert_channel_id":
             await svc.alerts.tax(card)
+        elif key == "trade_alert_channel_id":
+            await svc.alerts.trade(card)
         elif key == "config_audit_channel_id":
             await svc.alerts.flush_config_audit()         # queued entries are posted now
         else:

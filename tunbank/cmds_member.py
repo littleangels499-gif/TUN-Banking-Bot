@@ -260,7 +260,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         with svc.db.read() as conn:
             return bool(svc.deposits and svc.deposits.usable_for(conn, m["nation_id"], m["discord_id"]))
 
-    async def direct_deposit(interaction, m, parsed):
+    async def direct_deposit(interaction, m, parsed, skip_confirm=False):
         nid = m["nation_id"]
         snap = await svc.prices.get()
         val = value_amounts(parsed, snap)
@@ -274,7 +274,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         card.add("Amount", fmt.amounts_with_value(parsed, val))
         card.add("Your key", f"saved key `{hint_}` · never shown or logged", True)
         card.add("Crediting", "Your TUN balance changes only after PnW's real bank record appears. If PnW refuses, nothing changes.")
-        if not await confirm(svc, interaction, card):
+        if not skip_confirm and not await confirm(svc, interaction, card):
             return await reply(interaction, "Cancelled. Nothing was sent.")
         res = await svc.deposits.start(nation_id=nid, discord_id=interaction.user.id, amounts=parsed,
                                        idem=f"mdep-{interaction.id}", value_cents=val.total_cents, snapshot_id=snap.id if snap else None)
@@ -308,6 +308,78 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
     async def submit_plan_form(interaction, amounts):
         await thinking(interaction)
         await plan_deposit(interaction, amounts)
+
+    API_NOT_SET = ("**Your PnW API access is not configured.**\n\n"
+                   "Please link your nation and enable the required API access before using this feature:\n"
+                   "1. Link your nation: `/nation link`\n"
+                   "2. In Politics & War open your **Account** page, copy your API key and switch **Whitelisted access** ON.\n"
+                   "3. Press **Set up my API key** below (the key is stored encrypted and never shown).")
+
+    async def api_help(interaction):
+        if not (svc.deposits and svc.deposits.available()):
+            return await reply(interaction, "Deposits from Discord are not switched on for this bot yet. ECON can enable them; "
+                                            "meanwhile `/bank deposit` shows the exact in-game steps.")
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        await reply(interaction, API_NOT_SET, view=ActionView(interaction.user.id, [("Set up my API key", "🔑", "primary", open_key_form)]))
+
+    async def open_key_form(interaction):
+        m = _linked(svc, interaction)
+        if not m:
+            return await interaction.response.send_message(NOT_LINKED, ephemeral=True)
+        if not (svc.deposits and svc.deposits.available()):
+            return await interaction.response.send_message("Direct deposits are not switched on for this bot.", ephemeral=True)
+        await open_form(interaction, "Your PnW API key", [dict(label="Paste your API key (it is hidden from everyone)", placeholder="your PnW API key", max=64)], submit_key)
+
+    async def panel_deposit(interaction, parsed):
+        """Deposit Funds from the panel. `interaction` is already deferred."""
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        if not can_direct(m):
+            return await api_help(interaction)
+        await direct_deposit(interaction, m, parsed)
+
+    async def act_excess(interaction):
+        """Deposit Excess: work out what the member's nation holds above ECON's configured limits and deposit it."""
+        await thinking(interaction)
+        from .config import cfg_get
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        with svc.db.read() as conn:
+            limits_text = (cfg_get(conn, "excess_holdings") or "").strip()
+        if not limits_text:
+            return await reply(interaction, "ECON hasn't set the excess-holdings limits yet, so there is nothing to compare against. "
+                                            "(Admins: `/bankset excess`.)")
+        try:
+            limits = M.parse_amounts(limits_text)
+        except M.AmountError:
+            return await reply(interaction, "The excess-holdings limits are set up incorrectly. Please tell ECON.")
+        if not can_direct(m):
+            return await api_help(interaction)
+        try:
+            held = await svc.deposits.holdings(nation_id=m["nation_id"], discord_id=interaction.user.id)
+        except CR.CredentialError as exc:
+            return await reply(interaction, str(exc))
+        except (PnWRejected, PnWUncertain) as exc:
+            return await reply(interaction, f"I couldn't read your nation's holdings from Politics & War, so nothing was deposited: {exc}\n"
+                                            "Check that **Whitelisted access** is on for your API key.")
+        excess = {r: held.get(r, 0) - lim for r, lim in limits.items() if held.get(r, 0) > lim}
+        if not excess:
+            return await reply(interaction, f"{icons.status('ok')} **No excess found.** Everything in your nation is within ECON's limits.")
+        snap = await svc.prices.get()
+        val = value_amounts(excess, snap)
+        card = A.Card(f"{icons.status('deposit')} EXCESS FUNDS FOUND",
+                      "These are above ECON's limits for what a nation should keep. Press Confirm to deposit all of it.", A.ORANGE)
+        card.add("Excess", fmt.amounts_with_value(excess, val))
+        card.add("Your nation holds → limit", "\n".join(
+            f"{M.LABELS[r]}: {M.fmt_units(r, held.get(r, 0))} → {M.fmt_units(r, limits[r])}" for r in excess)[:1000])
+        card.add("Crediting", "Your TUN balance changes only after PnW's real bank record appears. If PnW refuses, nothing changes.")
+        if not await confirm(svc, interaction, card):
+            return await reply(interaction, "Cancelled. Nothing was sent.")
+        await direct_deposit(interaction, m, excess, skip_confirm=True)
 
     # ----------------------------------------------------------- the member's own API key
     async def submit_key(interaction, api_key):
@@ -343,12 +415,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
 
     @nation.command(name="setkey", description="Let TUN Bank start deposits from YOUR nation with your own PnW API key")
     async def setkey(interaction: discord.Interaction):
-        m = _linked(svc, interaction)
-        if not m:
-            return await reply(interaction, NOT_LINKED)
-        if not (svc.deposits and svc.deposits.available()):
-            return await reply(interaction, "Direct deposits are not switched on for this bot. You can still use `/bank deposit` for the exact manual steps.")
-        await open_form(interaction, "Your PnW API key", [dict(label="Paste your API key (it is hidden from everyone)", placeholder="your PnW API key", max=64)], submit_key)
+        await open_key_form(interaction)
 
     @nation.command(name="removekey", description="Delete the API key you saved with TUN Bank")
     async def removekey(interaction: discord.Interaction):
@@ -393,8 +460,10 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         await show_dashboard(interaction)
 
     # --------------------------------------------------------------- withdraw
-    async def do_withdraw(interaction, parsed, note):
-        """Everything after the amounts are known. `interaction` is already deferred."""
+    async def do_withdraw(interaction, parsed, note, dest=None):
+        """Everything after the amounts are known. `interaction` is already deferred.
+        dest=(nation_id, label) sends the member's own AVAILABLE funds to ANOTHER nation (Send Funds); the balance check,
+        limits, net-worth rule, confirmation, PnW confirmation and ledger are exactly the same."""
         m = _linked(svc, interaction)
         if not m:
             return await reply(interaction, NOT_LINKED)
@@ -402,6 +471,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
             if not cfg_bool(conn, "self_withdraw_enabled"):
                 return await reply(interaction, "Self-withdrawals are currently switched off by ECON.")
         nid = m["nation_id"]
+        dest_id, dest_label = (dest if dest else (nid, f"Your nation [#{nid}]"))
         try:
             snap, val, _ = await svc.wd.prepare(funding_source="MEMBER_AVAILABLE", amounts=parsed)
         except (PnWRejected, PnWUncertain) as exc:
@@ -421,9 +491,10 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
                 LIM.check_net_worth(conn, tx_type="WITHDRAW_SELF", nation_id=nid, amounts=parsed, snapshot=snap)
         except LIM.LimitExceeded as exc:
             return await reply(interaction, str(exc))
-        card = A.Card(f"{icons.status('withdraw')} Confirm withdrawal", "Check everything carefully. Nothing is sent until you press Confirm.", A.ORANGE)
+        card = A.Card(f"{icons.status('withdraw')} Confirm " + ("transfer to another nation" if dest else "withdrawal"),
+                      "Check everything carefully. Nothing is sent until you press Confirm.", A.ORANGE)
         card.add(f"{icons.status('money')} Funding source", "YOUR AVAILABLE DEPOSIT", True)
-        card.add(f"{icons.status('member')} Destination", f"Your nation [#{nid}]", True)
+        card.add(f"{icons.status('member')} Destination", dest_label, True)
         card.add("Amount", fmt.amounts_with_value(parsed, val))
         card.add("Available before", fmt.amount_lines(free), True)
         card.add("Available after", fmt.amount_lines(M.sub(free, parsed)), True)
@@ -433,10 +504,12 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
             return await reply(interaction, "Cancelled. Nothing was sent.")
         res = await svc.wd.request(
             tx_type="WITHDRAW_SELF", funding_source="MEMBER_AVAILABLE", member_nation_id=nid, lock_id=None,
-            dest_nation_id=nid, amounts=parsed, actor=str(interaction.user.id), note=note or "TUN Bank withdrawal",
-            reason="member self-withdrawal", idempotency_key=f"self-{interaction.id}",
+            dest_nation_id=dest_id, amounts=parsed, actor=str(interaction.user.id),
+            note=note or ("TUN Bank transfer" if dest else "TUN Bank withdrawal"),
+            reason="member transfer to another nation" if dest else "member self-withdrawal",
+            idempotency_key=f"{'send' if dest else 'self'}-{interaction.id}",
             actor_role_ids=role_ids(interaction))
-        out = A.withdrawal_card(res, actor_label=actor_label(interaction), dest_nation_id=nid,
+        out = A.withdrawal_card(res, actor_label=actor_label(interaction), dest_nation_id=dest_id,
                                 source_label="Member AVAILABLE", amounts=parsed, note=note)
         await reply(interaction, card=out, view=ActionView(interaction.user.id, [
             ("My dashboard", "🏦", "primary", act_dashboard), ("Withdraw more", "💸", "secondary", act_withdraw_form)]))
@@ -445,6 +518,29 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
             await svc.alerts.econ(A.Card(f"{icons.status('warn')} A member withdrawal could not be paid",
                                          f"{actor_label(interaction)} · nation [#{nid}]\n{res.internal}", A.ORANGE, kind="WITHDRAWAL"))
         await svc.alerts.flush_events()
+
+    async def do_send(interaction, recipient_text, parsed, note):
+        """Send Funds: the member's own available balance to another nation. `interaction` is already deferred."""
+        m = _linked(svc, interaction)
+        if not m:
+            return await reply(interaction, NOT_LINKED)
+        with svc.db.read() as conn:
+            if not cfg_bool(conn, "member_send_enabled"):
+                return await reply(interaction, "Sending funds to other nations is currently switched off by ECON.")
+        try:
+            rid = await RS.resolve(svc, recipient_text)
+        except RS.ResolveError as exc:
+            return await reply(interaction, str(exc))
+        if rid == m["nation_id"]:
+            return await reply(interaction, "That is your own nation. Use **Withdraw to Me** instead.")
+        try:
+            info = await svc.pnw.fetch_nation(rid)
+        except (PnWRejected, PnWUncertain) as exc:
+            return await reply(interaction, f"I couldn't check that nation with Politics & War, so nothing was sent: {exc}")
+        if not info:
+            return await reply(interaction, f"There is no nation with id {rid} in Politics & War. Nothing was sent.")
+        label = f"{info.get('nation_name') or 'Nation'} [#{rid}]" + (f" · alliance #{info['alliance_id']}" if info.get("alliance_id") else " · no alliance")
+        await do_withdraw(interaction, parsed, note or f"Sent via TUN Bank by nation #{m['nation_id']}", dest=(rid, label))
 
     async def submit_withdraw_form(interaction, amounts, note):
         await thinking(interaction)
@@ -529,6 +625,13 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
 
     svc.actions.update(dashboard=dashboard.callback)
     RS.attach(svc, link, "nation")
+
+    svc.actions["member_withdraw"] = do_withdraw
+    svc.actions["member_send"] = do_send
+    svc.actions["member_deposit"] = panel_deposit
+    svc.actions["member_excess"] = act_excess
+    svc.actions["member_dashboard"] = act_dashboard
+    svc.actions["member_api_help"] = api_help
 
 
 def conn_tags(conn):

@@ -23,6 +23,7 @@ CATEGORIES = {
     "account": ("My account", "🏦", "Everything you do with your own deposit."),
     "banking": ("Banking", "💸", "Day-to-day work for ECON staff: sending, reserving, correcting and reviewing."),
     "bulk": ("Bulk transfers", "📦", "Pay many nations at once from alliance-owned funds. Every row is checked first and never sent twice."),
+    "trade": ("Trade monitoring", "🔎", "Alerts when a member's trade breaks a rule. Nothing is punished automatically."),
     "loans": ("Loans", "🤝", "Money members owe the alliance. Kept separate from deposits."),
     "tax": ("Tax", "🧾", "Tax collected from members. Alliance-owned; members never see this."),
     "audit": ("Audit & security", "🔎", "Checks, approvals and the emergency lock."),
@@ -48,6 +49,10 @@ CATALOG = {
     # bulk
     "bulk template": ("bulk", "BANKER"), "bulk send": ("bulk", "BANKER"), "bulk resume": ("bulk", "BANKER"),
     "bulk status": ("bulk", "AUDITOR"),
+    # trade monitoring
+    "trade alerts": ("trade", "AUDITOR"), "trade alert": ("trade", "AUDITOR"), "trade status": ("trade", "AUDITOR"),
+    "trade review": ("trade", "BANKER"), "trade config": ("trade", "MINISTER"),
+    "trade nationalist": ("trade", "MINISTER"), "trade embargo": ("trade", "MINISTER"),
     # loans
     "loan mine": ("loans", "ALL"), "loan list": ("loans", "AUDITOR"), "loan view": ("loans", "AUDITOR"),
     "loan add": ("loans", "MINISTER"), "loan deduct": ("loans", "MINISTER"), "loan applypayment": ("loans", "BANKER"),
@@ -61,7 +66,7 @@ CATALOG = {
     "bank revoke": ("audit", "MINISTER"), "audit transactions": ("audit", "AUDITOR"), "audit stafflog": ("audit", "AUDITOR"),
     "audit nation": ("audit", "AUDITOR"), "audit run": ("audit", "AUDITOR"), "audit configlog": ("audit", "ADMIN"), "ledger reconcile": ("audit", "AUDITOR"),
     "ledger dashboard": ("audit", "AUDITOR"), "ledger emergencylock": ("audit", "MINISTER"), "ledger resolve": ("audit", "ADMIN"),
-    "bankset conversionpanel": ("config", "ADMIN"), "deposit reset": ("config", "ADMIN"),
+    "bankset conversionpanel": ("config", "ADMIN"), "bankset panel": ("config", "ADMIN"), "bankset excess": ("config", "MINISTER"), "deposit reset": ("config", "ADMIN"),
     # charts (staff)
     "chart nation": ("charts", "AUDITOR"), "chart vault": ("charts", "FLAG:bank_view_alliance_holdings"), "chart members": ("charts", "FLAG:bank_view_alliance_holdings"),
     "chart deposits": ("charts", "AUDITOR"), "chart tax": ("charts", "FLAG:bank_view_tax"),

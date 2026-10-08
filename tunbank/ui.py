@@ -30,6 +30,7 @@ class Services:
     offshore: object = None
     crypto: object = None
     deposits: object = None
+    trade_monitor: object = None
 
     async def announce_overdue_loans(self) -> int:
         """Tell ECON once about each loan that has just become overdue. Nothing is ever taken automatically."""
