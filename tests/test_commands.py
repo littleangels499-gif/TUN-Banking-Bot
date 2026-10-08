@@ -836,9 +836,9 @@ class Cmd(unittest.TestCase):
         cfg = self.press(hv, "Configuration", self.admin).edited["embed"]
         self.assertIn("/bankset addbanker", cfg.description)
         self.assertIn("Admin", cfg.description)
-        self.assertEqual(cfg.footer_text, "Configuration · page 1 of 3 · TUN Bank")
+        self.assertEqual(cfg.footer_text, "Configuration · page 1 of 4 · TUN Bank")
         nxt = self.press(hv, "Next page", self.admin).edited["embed"]
-        self.assertIn("page 2 of 3", nxt.footer_text)
+        self.assertIn("page 2 of 4", nxt.footer_text)
         self.assertIn("/bankset setrole", self.press(hv, "Next page", self.admin).edited["embed"].description)
         self.press(hv, "Banking", self.admin)
         pages = []
@@ -878,7 +878,7 @@ class Cmd(unittest.TestCase):
         from tunbank import bot as botmod
         b = botmod.TunBankBot(self.settings, self.db)
         self.run_async(b.setup_hook())
-        self.assertEqual(sorted(b.tree.cmds), ["audit", "bank", "bankset", "bulk", "chart", "deposit", "grant", "ledger", "loan", "nation", "tax"])
+        self.assertEqual(sorted(b.tree.cmds), ["audit", "bank", "bankset", "bulk", "chart", "deposit", "grant", "ledger", "loan", "nation", "tax", "trade"])
 
 
 class OffshoreCmd(Cmd):

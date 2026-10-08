@@ -63,3 +63,10 @@ Note: `/deposit restore` was merged into the existing `/bankset importopening` (
 * Member balances are compared net (negatives subtract). The conservative "alliance-owned = bank − positive claims" figure is still what conversions and alliance payouts use, so they can never spend what members are owed.
 * Trade-off you chose: a loss in one resource that is offset by surplus in others is a WARNING, not a lock. Withdrawals stay safe because each one needs the paying bank to physically hold the resource.
 * Tax records now bypass the "sender is a nation" check (they were being sent to ECON review); stored review items are corrected on the next scan.
+
+## 11. Panel and trade monitoring (built)
+* **Panel:** `/bankset panel`. Buttons call the existing services through `svc.actions` (withdrawal, deposit, offshore, dashboard); no banking logic lives in the buttons. Send Funds is the normal member withdrawal with another destination. Deposit Excess uses `/bankset excess` limits. Guide 16.
+* **Member deposit from Discord** already existed (`/nation setkey` + `/bank deposit`, credit only after the real PnW record); the panel's Deposit button now uses it.
+* **Trade monitoring:** migration 010, `trademon.py`, `/trade …`. Alert-only. Price / Nationalist / Embargo rules share one engine, one configuration and the configuration audit log.
+* **Needs checking against live PnW:** the `trades` query fields (the bot falls back to looking nations up itself if PnW refuses the nested sender/receiver fields) and the `me { nation { …resources } }` query used by Deposit Excess. Errors are shown in `/trade status` and in the member's reply.
+* Embargo opt-out cannot be read from the API; alerts say GAME ALLOWED · TUN POLICY VIOLATED and never claim the member opted out.
