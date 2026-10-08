@@ -7,7 +7,7 @@ import logging
 from . import ledger as L
 from . import records as REC
 from .pnw import PnWRejected, PnWUncertain
-from .util import now_iso
+from .util import utcnow, now_iso
 from .valuation import value_amounts
 
 log = logging.getLogger("tunbank.scanner")
@@ -106,6 +106,15 @@ class Scanner:
                 n_old = conn.execute("UPDATE tax_turns SET alerted_at='backfill' WHERE alerted_at IS NULL").rowcount
                 L.set_state(conn, "tax_feed_started", "1")
                 L.audit(conn, "system", "TAX_FEED_STARTED", None, {"old_turns_marked_announced": n_old})
+            fixed = sum(1 for o in outcomes if o.note == "TAX_RECLASSIFIED")
+            if fixed:
+                # Tax records an earlier version had wrongly sent to ECON review were put back where they belong.
+                # Their turns are history: only the last few hours may still be announced.
+                from datetime import timedelta
+                cutoff = (utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d %H")
+                n_old = conn.execute("UPDATE tax_turns SET alerted_at='backfill' WHERE alerted_at IS NULL AND turn_key < ?",
+                                     (cutoff,)).rowcount
+                L.audit(conn, "system", "TAX_RECLASSIFIED", None, {"records": fixed, "old_turns_not_announced": n_old})
             L.set_state(conn, "last_tax_fetch_error", tax_error or "")
             L.set_state(conn, "last_scan_ok", now_iso())
             L.set_state(conn, "last_scan_error", "")

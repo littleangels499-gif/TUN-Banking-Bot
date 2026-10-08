@@ -115,13 +115,21 @@ def process_record(conn, rec: dict, ctx: Ctx) -> Outcome:
                 dedupe_key=f"recchanged:{n['id']}")
             return Outcome(n["id"], "ANOMALY", note="PnW record differs from what was stored",
                            new_events=[eid] if new else [])
+        if (n.get("is_tax") and n["sender_id"] and existing["classification"] == "REVIEW"
+                and existing["status"] == "AWAITING_REVIEW" and existing["credited_nation_id"] is None):
+            # An earlier version sent PnW tax collections to ECON review because the sender check ran first.
+            # They credit nothing, so they are simply put where they belong. Original PnW data is untouched.
+            conn.execute("UPDATE pnw_records SET classification='TAX', status='NO_CREDIT' WHERE id=?", (n["id"],))
+            _store_tax(conn, n, ctx)
+            return Outcome(n["id"], "TAX", "TAX", note="TAX_RECLASSIFIED")
         return Outcome(n["id"], "DUPLICATE", classification=existing["classification"])
 
     ids = _banks(ctx)
     if (n["sender_type"] == 2 and n["sender_id"] in ids and n["receiver_type"] == 2 and n["receiver_id"] in ids
             and n["sender_id"] != n["receiver_id"]):
         return _process_offshore_transfer(conn, n, ctx)
-    direction = _direction(n, ctx)
+    is_tax = bool(n.get("is_tax") and n["sender_id"])
+    direction = "IN" if is_tax else _direction(n, ctx)
     if direction == "OTHER":
         B.insert_record(conn, n, direction="OTHER", classification="OTHER", status="NO_CREDIT",
                         snapshot_id=ctx.snapshot_id)
@@ -130,7 +138,9 @@ def process_record(conn, rec: dict, ctx: Ctx) -> Outcome:
     if direction == "OUT":
         return _process_outbound(conn, n, ctx)
 
-    if n["receiver_id"] != ctx.alliance_id:      # paid straight into the offshore bank, not the main collection bank
+    if is_tax:                                   # PnW's own tax feed: never a deposit, whatever the sender/receiver types say
+        cls, status, nation, reason = ("TAX", "NO_CREDIT", n["sender_id"], "PnW tax collection")
+    elif n["receiver_id"] != ctx.alliance_id:    # paid straight into the offshore bank, not the main collection bank
         cls, status, nation, reason = ("REVIEW", "AWAITING_REVIEW", None, "deposit made directly to the offshore bank")
     else:
         cls, status, nation, reason = classify_inbound(conn, n, ctx)

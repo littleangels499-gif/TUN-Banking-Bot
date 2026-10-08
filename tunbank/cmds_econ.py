@@ -144,24 +144,14 @@ def register(bank: app_commands.Group, svc: Services):
         def run():
             with svc.db.tx() as conn:
                 return R.run_checks(conn, holdings=live, snapshot_id=snap.id if snap else None,
-                                    triggered_by=interaction_actor, per_bank=per_bank)
+                                    triggered_by=interaction_actor, per_bank=per_bank, snapshot=snap)
         result = await asyncio.to_thread(run)
         await svc.alerts.flush_events()
         return result
 
     def recon_card(result, show_bank: bool = False) -> A.Card:
-        ok = result["result"] == "OK"
-        c = A.Card("Reconciliation " + result["result"], "", A.GREEN if ok else (A.ORANGE if result["result"] == "WARNING" else A.RED))
-        if ok:
-            c.description = "Ledger, PnW records and the real bank all agree. Hash chains intact."
-        for f in result["findings"][:10]:
-            c.add(f"{f['severity']}: {f['kind']}", f["message"])
-        pos = result["position"]
-        if pos["bank"] is not None and show_bank:
-            c.add("Real bank vs member-held", f"Bank cash {fmt.dollars(pos['bank'].get('money', 0))} vs "
-                  f"members {fmt.dollars(pos['member_total'].get('money', 0))}")
-        c.add("Run", f"#{result['run_id']}", True)
-        return c
+        from .recon_report import report_card
+        return report_card(result, show_figures=show_bank)
 
     @bank.command(name="reconcile", description="ECON: run a full reconciliation now")
     async def reconcile(interaction: discord.Interaction):

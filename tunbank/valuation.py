@@ -158,3 +158,13 @@ class PriceService:
                     last.notes.append(f"price refresh failed: {exc}")
                 self._cached, self._cached_mono = last, time.monotonic() - max(0, ttl - 30)
                 return last
+
+
+def snapshot_by_id(conn, snapshot_id) -> "Snapshot | None":
+    """Load a stored price snapshot (used by reconciliation to value the bank at the prices of that run)."""
+    if snapshot_id is None:
+        return None
+    row = conn.execute("SELECT * FROM price_snapshots WHERE id=?", (snapshot_id,)).fetchone()
+    if not row:
+        return None
+    return Snapshot(row["id"], row["fetched_at"], {k: Decimal(v) for k, v in json.loads(row["prices_json"]).items()})

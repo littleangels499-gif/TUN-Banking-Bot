@@ -28,6 +28,15 @@ def compact_number(units: int) -> str:
     return f"{sign}{v:,.2f}".rstrip("0").rstrip(".")
 
 
+def compact_money(cents: int) -> str:
+    """609_000_000_00 -> $6.09B (for reports)."""
+    v, sign = abs(cents) / 100, "-" if cents < 0 else ""
+    for limit, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if v >= limit:
+            return f"{sign}${v / limit:.2f}{suffix}"
+    return f"{sign}${v:,.2f}"
+
+
 def amount_lines(amounts: dict) -> str:
     """One resource per line with its icon:  💵 **Cash** — $1,000,000.00"""
     lines = [f"{icons.resource(r)} **{M.LABELS[r]}** — {M.fmt_units(r, amounts[r])}"

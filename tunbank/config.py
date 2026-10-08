@@ -220,6 +220,7 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "opening_import_allowed": ("1", "1 = spreadsheet opening-balance import is allowed"),
     "conversion_enabled": ("1", "1 = members may convert resources inside their TUN Bank balance (ledger only)"),
     "conversion_max_value": ("0", "Largest single conversion, in $ of market value (0 = no cap)"),
+    "recon_net_tolerance": ("0", "Reconciliation: overall net shortfall (in $) tolerated before RECONCILIATION REQUIRED is raised"),
     "net_worth_withdraw_limit": ("1", "1 = a member's own withdrawal may not be worth more than their net deposit worth"),
     "net_worth_include_locked": ("1", "1 = locked balances count towards net deposit worth (0 = available funds only)"),
     "config_audit_channel_id": ("", "Discord channel ID for the private configuration/security audit log"),

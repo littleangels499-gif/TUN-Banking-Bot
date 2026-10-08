@@ -10,10 +10,15 @@ import datetime as dt
 
 from . import ledger as L
 from . import money as M
-from .config import cfg_int
+from .config import cfg_get, cfg_int
 from .util import ISO_FMT, jdump, now_iso, seconds_since, sha256_text, utcnow
+from .valuation import snapshot_by_id, value_amounts
 
 AUTO_RESOLVE = ("STALE_SYNC", "STALE_PRICES", "BANK_UNAVAILABLE")
+# Position findings are recomputed from scratch on every run, so they clear themselves when the position recovers.
+# They are only cleared when the real bank could actually be read (an unreadable bank proves nothing).
+POSITION_KINDS = ("RESOURCE_SHORTFALL", "NET_POSITION_SHORTFALL")
+OBSOLETE_KINDS = ("LEDGER_EXCEEDS_BANK",)          # replaced by the three-part position check below
 
 
 def _f(sev, kind, msg, *, nation_id=None, details=None, key=None):
@@ -214,18 +219,71 @@ def bank_position(conn, holdings: dict | None) -> dict:
             "alliance_owned": alliance}
 
 
-def check_bank(conn, holdings):
+def resource_positions(conn, holdings: dict) -> dict:
+    """Per resource: what the PnW bank holds vs what members net to.
+
+        liability  = what members are owed (positive balances, available + locked, minus in-flight payouts)
+        owed       = what members owe the alliance (negative balances)
+        member_net = liability - owed
+        difference = bank - member_net        (negative = the bank holds LESS than members' net balances)
+    """
+    claims = L.positive_claims(conn)
+    in_flight = in_flight_out_of_bank(conn)
+    out = {}
+    for r in M.RESOURCES:
+        bank = holdings.get(r, 0)
+        liability = claims["AVAILABLE"].get(r, 0) + claims["LOCKED"].get(r, 0) - in_flight.get(r, 0)
+        owed = claims["OWED"].get(r, 0)
+        if not (bank or liability or owed):
+            continue
+        net = liability - owed
+        out[r] = {"bank": bank, "liability": liability, "owed": owed, "member_net": net, "difference": bank - net}
+    return out
+
+
+def net_position(conn, holdings: dict, snapshot=None) -> dict:
+    """The bank's overall net economic position: every resource difference valued at market prices
+    (cash at face value). net_cents is None when prices are missing or unreliable - never guessed."""
+    res = resource_positions(conn, holdings)
+    diffs = {r: p["difference"] for r, p in res.items() if p["difference"]}
+    v = value_amounts(diffs, snapshot)            # cash needs no price; any other resource does
+    missing = list(v.missing)
+    net_cents = v.total_cents if (v.usable_for_limits and v.total_cents is not None) else None
+    return {"resources": res, "net_cents": net_cents, "missing_prices": missing,
+            "short": {r: -d for r, d in diffs.items() if d < 0}}
+
+
+def check_bank(conn, holdings, snapshot=None):
+    """Three separate questions, never one blanket failure:
+       1. resource level - which resources are short in the bank? (WARNING)
+       2. overall net market position - is the alliance underwater once everything is valued? (RECONCILIATION REQUIRED)
+       3. liquidity - NOT decided here: every withdrawal is refused on its own when the paying bank does not physically
+          hold the requested resource (see withdrawals.py)."""
     if holdings is None:
         return [_f("WARNING", "BANK_UNAVAILABLE",
                    "Could not read the real PnW bank, so the ledger could not be compared to it.")]
-    pos = bank_position(conn, holdings)
-    short = {r: -v for r, v in (pos["alliance_owned"] or {}).items() if v < 0}
+    npos = net_position(conn, holdings, snapshot)
+    net, short = npos["net_cents"], npos["short"]
+    tol = int(float(cfg_get(conn, "recon_net_tolerance") or 0) * 100)
+    out = []
     if short:
-        return [_f("CRITICAL", "LEDGER_EXCEEDS_BANK",
-                   "Member-held balances are LARGER than what the PnW bank actually holds.",
-                   details={"shortfall": short, "bank": holdings,
-                            "member_total": pos["member_total"]}, key="ledger-exceeds-bank")]
-    return []
+        names = ", ".join(M.LABELS[r] for r in short)
+        if net is None:
+            tail = "The overall net position could not be calculated (market prices unavailable)."
+        elif net >= -tol:
+            tail = "Overall the alliance's net position is positive, so this is a warning only."
+        else:
+            tail = "Overall the net position is NEGATIVE (see the separate finding)."
+        out.append(_f("WARNING", "RESOURCE_SHORTFALL",
+                      f"{len(short)} resource(s) are lower in the PnW bank than members' net balances: {names}. {tail} "
+                      "Banking continues; a withdrawal of a short resource is refused automatically until the bank can pay.",
+                      details={"short": short, "net_value_cents": net}, key="resource-shortfall"))
+    if net is not None and net < -tol:
+        out.append(_f("RECON", "NET_POSITION_SHORTFALL",
+                      "Overall, members' net balances are worth MORE than the PnW bank holds at current market prices. "
+                      "This needs ECON investigation.",
+                      details={"net_value_cents": net, "short": short}, key="net-position-shortfall"))
+    return out
 
 
 def check_stuck(conn):
@@ -287,15 +345,32 @@ def check_previous_head(conn):
     return []
 
 
+def _lift_obsolete_lock(conn) -> None:
+    """Earlier versions raised a CRITICAL 'LEDGER_EXCEEDS_BANK' for any single-resource shortfall, which engaged the
+    emergency lock automatically. If that is the ONLY reason the lock is on and nothing else critical is open,
+    lift it - a resource-level shortfall is a warning now. Any other lock is left exactly as it is."""
+    if L.get_state(conn, "emergency_lock") != "1":
+        return
+    if not (L.get_state(conn, "emergency_reason", "") or "").startswith("Automatic lock: LEDGER_EXCEEDS_BANK"):
+        return
+    if conn.execute("SELECT COUNT(*) FROM integrity_events WHERE status='OPEN' AND severity='CRITICAL'").fetchone()[0]:
+        return
+    L.set_emergency_lock(conn, False, "Reconciliation rules changed: a resource-level shortfall is now a warning, "
+                                      "not an emergency lock", "system")
+
+
 # ----------------------------------------------------------------- main
-def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggered_by: str, per_bank: dict | None = None) -> dict:
+def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggered_by: str, per_bank: dict | None = None,
+               snapshot=None) -> dict:
     """Run every check, record findings as integrity events, store the run."""
     started = now_iso()
     findings = []
     for fn in (check_chains, check_balances, check_justification, check_opening,
                check_stuck, check_freshness, check_mass_changes, check_previous_head):
         findings += fn(conn)
-    findings += check_bank(conn, holdings)
+    if snapshot is None:
+        snapshot = snapshot_by_id(conn, snapshot_id)
+    findings += check_bank(conn, holdings, snapshot)
 
     new_events = []
     for f in findings:
@@ -306,19 +381,27 @@ def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggere
         if is_new:
             new_events.append(f)
     present = {f["kind"] for f in findings}
-    for kind in AUTO_RESOLVE:
+    clearable = list(AUTO_RESOLVE) + (list(POSITION_KINDS) if holdings is not None else []) + list(OBSOLETE_KINDS)
+    for kind in clearable:
         if kind not in present:
             conn.execute(
                 "UPDATE integrity_events SET status='RESOLVED', resolved_by='system', resolved_at=?, "
                 "resolution_note='Condition cleared' WHERE status='OPEN' AND kind=? "
                 "AND dedupe_key LIKE 'recon:%'", (now_iso(), kind))
 
+    _lift_obsolete_lock(conn)
     chain = L.verify_chain(conn, "ledger_entries")
     sev = {f["severity"] for f in findings}
     result = "OK" if not findings else ("DISCREPANCY" if sev & {"RECON", "CRITICAL"} else "WARNING")
     pos = bank_position(conn, holdings)
     if per_bank:
         pos["banks"] = per_bank
+    if holdings is not None:
+        npos = net_position(conn, holdings, snapshot)
+        pos["resources"], pos["net_cents"], pos["missing_prices"] = npos["resources"], npos["net_cents"], npos["missing_prices"]
+    state = L.integrity_state(conn)
+    status = state["state"]                                 # NORMAL / WARNING / RECONCILIATION_REQUIRED / EMERGENCY_LOCK
+    pos["status"] = status
     cur = conn.execute(
         "INSERT INTO reconciliation_runs(started_at,finished_at,triggered_by,result,findings_json,"
         "bank_json,ledger_head_id,ledger_head_hash,ledger_count,price_snapshot_id) "
@@ -332,5 +415,6 @@ def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggere
         L.set_state(conn, "last_reconcile_ok", now_iso())
     L.audit(conn, triggered_by, "RECONCILIATION_RUN", f"run:{cur.lastrowid}",
             {"result": result, "findings": [f["kind"] for f in findings]})
-    return {"run_id": cur.lastrowid, "result": result, "findings": findings,
+    return {"run_id": cur.lastrowid, "result": result, "status": status, "lock_reason": state["emergency_reason"],
+            "findings": findings,
             "new_events": new_events, "position": pos, "chain": chain}

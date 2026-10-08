@@ -19,7 +19,7 @@ from . import resolve as RS
 from . import taxutil as TX
 from .pnw import PnWRejected, PnWUncertain
 from .buttons import ActionView, open_form
-from .ui import Services, RefreshView, chunk_cards, nation_arg, need, paginate, post_outcomes, reply, thinking, xlsx_file
+from .ui import Services, RefreshView, chunk_cards, nation_arg, has_flag, need, paginate, post_outcomes, reply, thinking, xlsx_file
 from .valuation import value_amounts
 
 log = logging.getLogger("tunbank.audit")
@@ -476,13 +476,8 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
             return
         await thinking(interaction)
         result = await svc.do_reconcile(f"discord:{interaction.user.id}")
-        ok = result["result"] == "OK"
-        c = A.Card("Audit " + result["result"], "", A.GREEN if ok else A.RED)
-        for f in result["findings"][:10]:
-            c.add(f"{f['severity']}: {f['kind']}", f["message"])
-        if ok:
-            c.description = "All checks passed."
-        await reply(interaction, card=c)
+        from .recon_report import report_card
+        await reply(interaction, card=report_card(result, show_figures=has_flag(svc, interaction, "bank_view_alliance_holdings")))
 
     # ----------------------------------------------------------------- /ledger
     @ledger_grp.command(name="reconcile", description="Run reconciliation and show the result")

@@ -169,12 +169,16 @@ def integrity_card(f: dict) -> Card:
              RED if sev == "CRITICAL" else ORANGE, kind="INTEGRITY")
     c.add("Severity", sev, True)
     c.add("Event ID", f"#{f.get('event_id', '?')}", True)
-    hide = {"message", "bank", "shortfall", "member_total", "banks"}      # treasury figures stay out of shared channels
+    hide = {"message", "bank", "shortfall", "member_total", "banks", "short", "net_value_cents", "resources"}   # treasury figures stay out of shared channels
     det = {k: v for k, v in f.get("details", {}).items() if k not in hide}
     if det:
         c.add("Evidence", "```json\n" + json.dumps(det, default=str)[:900] + "\n```")
-    c.add("What to do", "Review with `/ledger dashboard`. Nothing was changed automatically; "
-                        "balances are NOT rewritten.")
+    todo = {
+        "RESOURCE_SHORTFALL": "No action needed to keep banking running. Run `/bank reconcile` to see the full position per resource.",
+        "NET_POSITION_SHORTFALL": "ECON investigation needed. Run `/bank reconcile` for the position per resource and what to check. "
+                                  "Withdrawals are paused until the position recovers or the event is resolved.",
+    }.get(f["kind"], "Review with `/ledger dashboard`. Nothing was changed automatically; balances are NOT rewritten.")
+    c.add("What to do", todo)
     return c
 
 
