@@ -54,7 +54,7 @@ class WithdrawalService:
         val = value_amounts(amounts, snap)
         alliance_free = None
         if funding_source == "ALLIANCE":
-            holdings, _ = await live_holdings(self.pnw, self.s)  # raises if ANY bank is unreadable
+            holdings, _ = await live_holdings(self.pnw, self.s, self.db)  # raises if ANY bank is unreadable
             with self.db.read() as conn:
                 pos = R.bank_position(conn, holdings)
             alliance_free = {r: v for r, v in (pos["alliance_owned"] or {}).items() if v > 0}
@@ -86,6 +86,24 @@ class WithdrawalService:
             # Everyone else learns nothing about what the bank holds: a generic message, and ECON gets the detail.
             return Result("BLOCKED", "This withdrawal can't be processed right now. ECON has been notified; your balance is unchanged.",
                           valuation=val, internal=detail)
+
+        # Shared offshore: the paying bank may physically hold the funds yet part of them belong to ANOTHER alliance.
+        # This alliance may only pay out of its own share.
+        if self.s.offshore is not None and self.s.payout is self.s.offshore:
+            from . import offshore_ledger as OL
+            from .reconcile import in_flight_out_of_bank
+
+            with self.db.read() as conn:
+                if OL.shared_enabled(conn):
+                    share = M.sub(OL.balances(conn, OL.host_id(conn) or 0), in_flight_out_of_bank(conn))
+                    over = [r for r, a in amounts.items() if share.get(r, 0) < a]
+                    if over:
+                        detail = ("This alliance's share of the shared offshore does not cover " + ", ".join(M.LABELS[r] for r in over)
+                                  + " right now (the rest belongs to another alliance). Move funds with /bank offshore or reassign shares with /offshore reassign.")
+                        if reveal_treasury:
+                            return Result("BLOCKED", detail, valuation=val, internal=detail)
+                        return Result("BLOCKED", "This withdrawal can't be processed right now. ECON has been notified; your balance is unchanged.",
+                                      valuation=val, internal=detail)
 
         def begin():
             with self.db.tx() as conn:
@@ -199,6 +217,7 @@ class WithdrawalService:
             tx, _ = L.get_tx(conn, tx_id)
             before = tx["balance_before_json"]
             L.complete_withdrawal(conn, tx_id)
+            REC.offshore_payout_debit(conn, n["id"], self.s.offshore.alliance_id if self.s.offshore else None)
             tx, _ = L.get_tx(conn, tx_id)
         import json
         return Result("COMPLETED", "Transfer completed.", tx_id, n["id"], val,
@@ -233,7 +252,7 @@ class WithdrawalService:
         def apply():
             with self.db.tx() as conn:
                 for r in mine:
-                    REC.process_record(conn, r, REC.Ctx(self.s.alliance_id, members=None, bank_ids=self.s.bank_ids))
+                    REC.process_record(conn, r, REC.Ctx(self.s.alliance_id, members=None, bank_ids=self.s.bank_ids, offshore_id=self.s.offshore.alliance_id if self.s.offshore else None))
                 tx, _ = L.get_tx(conn, tx_id)
                 return tx["status"]
 
@@ -286,9 +305,10 @@ class WithdrawalService:
                 await asyncio.to_thread(self._fail, tid, "Bot restarted before this transfer was sent")
                 notes.append(f"tx #{tid}: never sent, released")
             elif tx["pnw_record_id"] is not None:
-                def fin(tid=tid):
+                def fin(tid=tid, rid=tx["pnw_record_id"]):
                     with self.db.tx() as conn:
                         L.complete_withdrawal(conn, tid)
+                        REC.offshore_payout_debit(conn, rid, self.s.offshore.alliance_id if self.s.offshore else None)
                 try:
                     await asyncio.to_thread(fin)
                     notes.append(f"tx #{tid}: booked from stored PnW record")

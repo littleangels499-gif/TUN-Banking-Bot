@@ -39,24 +39,6 @@ def register_tax(tax: app_commands.Group, svc: Services):
     def choice(value):
         return next(c for c in PERIOD_CHOICES if c.value == value)
 
-    @tax.command(name="sync", description="ECON: re-read PnW bank records now (tax collections are recorded automatically)")
-    async def sync(interaction: discord.Interaction):
-        if not await need(svc, interaction, "BANKER"):
-            return
-        await thinking(interaction)
-        res = await svc.scanner.scan()
-        if not res.ok:
-            return await reply(interaction, f"Sync failed: {res.error}")
-        await post_outcomes(svc, res.outcomes)
-        new_tax = sum(1 for o in res.outcomes if o.kind in ('TAX',))
-        msg = (f"Synced {res.seen} PnW record(s); PnW's tax feed returned {res.tax_seen} tax record(s), "
-               f"{new_tax} of them new.")
-        if res.tax_error:
-            msg += f"\n⚠️ The tax feed could not be read: {res.tax_error}"
-        elif not res.tax_seen:
-            msg += "\nPnW returned no tax records for the last 14 days. Check that tax is switched on for your brackets in-game."
-        await reply(interaction, msg)
-
     # ------------------------------------------------------------ dashboard
     @tax.command(name="dashboard", description="Confidential: taxes collected, top payers and brackets for a period")
     @app_commands.describe(period="Which period (default: last 30 days)")
@@ -136,10 +118,6 @@ def register_tax(tax: app_commands.Group, svc: Services):
         c.add("Records", str(len(rs)), True)
         c.add("PnW record references", ", ".join(f"#{r['pnw_record_id']}" for r in rs[-15:]) or "—")
         await reply(interaction, card=c)
-
-    @tax.command(name="paid", description="ECON: taxes paid by one nation (same as /tax report)")
-    async def paid(interaction: discord.Interaction, nation: str, period: Optional[app_commands.Choice[str]] = None):
-        await report.callback(interaction, nation, period)
 
     # ---------------------------------------------------------------- turns
     @tax.command(name="turns", description="Confidential: tax collected in each recent 2-hour turn (totals only)")
@@ -363,7 +341,6 @@ def register_tax(tax: app_commands.Group, svc: Services):
                                  f"{snap.fetched_at if snap else 'UNAVAILABLE'}.", file=xlsx_file(data, name))
 
     RS.attach(svc, report, "nation")
-    RS.attach(svc, paid, "nation")
     RS.attach(svc, profile, "nation")
     RS.attach(svc, exemptions, "nation")
     svc.actions["tax_export"] = export.callback
@@ -470,8 +447,9 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
                                                 empty="No configuration changes recorded yet.",
                                                 intro="Permanent record. Entries can't be edited or deleted."))
 
-    @audit.command(name="run", description="Run a full reconciliation audit now")
-    async def run(interaction: discord.Interaction):
+    # ----------------------------------------------------------------- /ledger
+    @ledger_grp.command(name="reconcile", description="Compare the ledger with the real PnW bank now and show the report")
+    async def lreconcile(interaction: discord.Interaction):
         if not await need(svc, interaction, "AUDITOR"):
             return
         await thinking(interaction)
@@ -479,10 +457,7 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
         from .recon_report import report_card
         await reply(interaction, card=report_card(result, show_figures=has_flag(svc, interaction, "bank_view_alliance_holdings")))
 
-    # ----------------------------------------------------------------- /ledger
-    @ledger_grp.command(name="reconcile", description="Run reconciliation and show the result")
-    async def lreconcile(interaction: discord.Interaction):
-        await run.callback(interaction)
+    svc.actions["reconcile"] = lreconcile.callback
 
     @ledger_grp.command(name="dashboard", description="Financial integrity status and open problems")
     async def ldashboard(interaction: discord.Interaction):
@@ -533,7 +508,7 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
             ("Lift lock" if st["emergency_lock"] else "Emergency lock", "🔓" if st["emergency_lock"] else "🔒",
              "success" if st["emergency_lock"] else "danger", b_lock)]))
 
-    @ledger_grp.command(name="emergencylock", description="Halt (or resume) ALL financial changes")
+    @ledger_grp.command(name="emergencylock", description="EMERGENCY: halt (or resume) ALL financial changes - for integrity problems, not routine pauses")
     @app_commands.choices(state=[app_commands.Choice(name="ON (halt everything)", value="on"),
                                  app_commands.Choice(name="OFF (resume)", value="off")])
     async def emergencylock(interaction: discord.Interaction, state: app_commands.Choice[str], reason: str):

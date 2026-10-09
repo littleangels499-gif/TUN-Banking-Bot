@@ -40,6 +40,22 @@ class MemberDepositService:
     def available(self) -> bool:
         return self.crypto.enabled and bool(self.s.deposit_bot_key)
 
+    def missing_setup(self) -> list[str]:
+        """What the bot's OWNER still has to configure before members can use direct deposits (empty = ready)."""
+        out = []
+        if not self.crypto.enabled:
+            out.append("`CREDENTIAL_ENCRYPTION_KEY` (run `python scripts/make_credential_key.py` and put the line it prints in `.env` / Railway Variables)")
+        if not self.s.deposit_bot_key:
+            out.append("a verified bot key: `OFFSHORE_BOT_KEY` or `MAIN_BOT_KEY`")
+        return out
+
+    def not_ready_message(self) -> str:
+        miss = self.missing_setup()
+        if not miss:
+            return ""
+        return ("Direct deposits aren't switched on yet. The person running the bot still needs to add: " + "; ".join(miss)
+                + ". (See docs/12.) Until then, `/bank deposit` shows the exact in-game steps.")
+
     def usable_for(self, conn, nation_id: int, discord_id) -> bool:
         from .config import cfg_bool
 

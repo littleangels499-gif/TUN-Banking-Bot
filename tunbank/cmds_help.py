@@ -23,6 +23,7 @@ CATEGORIES = {
     "account": ("My account", "🏦", "Everything you do with your own deposit."),
     "banking": ("Banking", "💸", "Day-to-day work for ECON staff: sending, reserving, correcting and reviewing."),
     "bulk": ("Bulk transfers", "📦", "Pay many nations at once from alliance-owned funds. Every row is checked first and never sent twice."),
+    "shared": ("Shared offshore", "🏝️", "One physical offshore, several alliances' shares. Each alliance sees only its own."),
     "trade": ("Trade monitoring", "🔎", "Alerts when a member's trade breaks a rule. Nothing is punished automatically."),
     "loans": ("Loans", "🤝", "Money members owe the alliance. Kept separate from deposits."),
     "tax": ("Tax", "🧾", "Tax collected from members. Alliance-owned; members never see this."),
@@ -39,8 +40,8 @@ CATALOG = {
     "chart mybalance": ("account", "ALL"), "chart mytrend": ("account", "ALL"),
     "prices": ("account", "ALL"), "help": ("account", "ALL"),
     # banking
-    "bank holdings": ("banking", "FLAG:bank_view_alliance_holdings"), "bank transactions": ("banking", "AUDITOR"), "bank records": ("banking", "AUDITOR"),
-    "bank scandeposits": ("banking", "BANKER"), "bank withdraw": ("banking", "BANKER"),
+    "bank holdings": ("banking", "FLAG:bank_view_alliance_holdings"), "bank records": ("banking", "AUDITOR"),
+    "bank sync": ("banking", "BANKER"), "bank withdraw": ("banking", "BANKER"),
     "bank reserve": ("banking", "MINISTER"), "bank release": ("banking", "MINISTER"), "bank adjust": ("banking", "MINISTER"),
     "bank freeze": ("banking", "MINISTER"), "bank unfreeze": ("banking", "MINISTER"), "bank lock": ("banking", "MINISTER"),
     "bank unlock": ("banking", "MINISTER"), "bank review": ("banking", "MINISTER"), "bank resolvetx": ("banking", "MINISTER"),
@@ -49,6 +50,11 @@ CATALOG = {
     # bulk
     "bulk template": ("bulk", "BANKER"), "bulk send": ("bulk", "BANKER"), "bulk resume": ("bulk", "BANKER"),
     "bulk status": ("bulk", "AUDITOR"),
+    # shared offshore
+    "offshore status": ("shared", "ALL"), "offshore account": ("shared", "ALL"), "offshore history": ("shared", "ALL"),
+    "offshore registry": ("shared", "AUDITOR"), "offshore enable": ("shared", "ADMIN"), "offshore assign": ("shared", "ADMIN"),
+    "offshore reassign": ("shared", "ADMIN"), "offshore release": ("shared", "ADMIN"), "offshore send": ("shared", "ADMIN"),
+    "offshore attribute": ("shared", "ADMIN"),
     # trade monitoring
     "trade alerts": ("trade", "AUDITOR"), "trade alert": ("trade", "AUDITOR"), "trade status": ("trade", "AUDITOR"),
     "trade review": ("trade", "BANKER"), "trade config": ("trade", "MINISTER"),
@@ -58,13 +64,12 @@ CATALOG = {
     "loan add": ("loans", "MINISTER"), "loan deduct": ("loans", "MINISTER"), "loan applypayment": ("loans", "BANKER"),
     "loan adopt": ("loans", "ADMIN"), "loan writeoff": ("loans", "ADMIN"),
     # tax
-    "tax sync": ("tax", "BANKER"), "tax turns": ("tax", "FLAG:bank_view_tax"), "tax dashboard": ("tax", "FLAG:bank_view_tax"), "tax report": ("tax", "FLAG:bank_view_tax"),
-    "tax paid": ("tax", "FLAG:bank_view_tax"), "tax profile": ("tax", "FLAG:bank_view_tax"), "tax brackets": ("tax", "FLAG:bank_view_tax"),
+    "tax turns": ("tax", "FLAG:bank_view_tax"), "tax dashboard": ("tax", "FLAG:bank_view_tax"), "tax report": ("tax", "FLAG:bank_view_tax"), "tax profile": ("tax", "FLAG:bank_view_tax"), "tax brackets": ("tax", "FLAG:bank_view_tax"),
     "tax exemptions": ("tax", "FLAG:bank_view_tax"), "tax export": ("tax", "FLAG:bank_view_tax"),
     # audit & security
-    "bank reconcile": ("audit", "AUDITOR"), "bank approvals": ("audit", "AUDITOR"), "bank approve": ("audit", "MINISTER"),
+    "bank approvals": ("audit", "AUDITOR"), "bank approve": ("audit", "MINISTER"),
     "bank revoke": ("audit", "MINISTER"), "audit transactions": ("audit", "AUDITOR"), "audit stafflog": ("audit", "AUDITOR"),
-    "audit nation": ("audit", "AUDITOR"), "audit run": ("audit", "AUDITOR"), "audit configlog": ("audit", "ADMIN"), "ledger reconcile": ("audit", "AUDITOR"),
+    "audit nation": ("audit", "AUDITOR"), "audit configlog": ("audit", "ADMIN"), "ledger reconcile": ("audit", "AUDITOR"),
     "ledger dashboard": ("audit", "AUDITOR"), "ledger emergencylock": ("audit", "MINISTER"), "ledger resolve": ("audit", "ADMIN"),
     "bankset conversionpanel": ("config", "ADMIN"), "bankset panel": ("config", "ADMIN"), "bankset excess": ("config", "MINISTER"), "deposit reset": ("config", "ADMIN"),
     # charts (staff)

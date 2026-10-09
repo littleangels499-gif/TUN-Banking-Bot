@@ -85,7 +85,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         await reply(interaction, f"Account #{nation_id} unfrozen.")
 
     # ------------------------------------------------- pause / resume withdrawals
-    @bank.command(name="lock", description="ECON: PAUSE all withdrawals (deposits keep being recorded)")
+    @bank.command(name="lock", description="ECON: PAUSE all withdrawals and conversions (deposits keep being recorded)")
     async def pause(interaction: discord.Interaction, reason: str):
         if not await need(svc, interaction, "MINISTER"):
             return
@@ -595,18 +595,6 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         data, name = await asyncio.to_thread(do)
         await reply(interaction, f"Export ready ({kind.value}). Prices as of {snap.fetched_at if snap else 'UNAVAILABLE'}.",
                     file=xlsx_file(data, name))
-
-    @bank.command(name="transactions", description="ECON: recent withdrawals")
-    async def transactions(interaction: discord.Interaction, status: str = ""):
-        if not await need(svc, interaction, "AUDITOR"):
-            return
-        with svc.db.read() as conn:
-            if status:
-                rows = conn.execute("SELECT * FROM transactions WHERE status=? ORDER BY id DESC LIMIT 15", (status.upper(),)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM transactions ORDER BY id DESC LIMIT 15").fetchall()
-        await paginate(interaction, chunk_cards(f"{icons.status('withdraw')} Transactions", [fmt.tx_line(r, True) for r in rows],
-                                                empty="No transactions.", per_page=6))
 
     @bank.command(name="resolvetx", description="ECON: settle an uncertain/stuck withdrawal by checking the PnW records")
     @app_commands.choices(action=[app_commands.Choice(name="check (look for the PnW record)", value="check"),

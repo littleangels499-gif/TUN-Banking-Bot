@@ -188,7 +188,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         await thinking(interaction)
         await show_dashboard(interaction)
 
-    @bank.command(name="balance", description="Quick view of your balance")
+    @bank.command(name="balance", description="Your balance in one short screen (see /bank dashboard for everything)")
     async def balance(interaction: discord.Interaction):
         await thinking(interaction)
         await show_dashboard(interaction, simple=True)
@@ -317,8 +317,8 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
 
     async def api_help(interaction):
         if not (svc.deposits and svc.deposits.available()):
-            return await reply(interaction, "Deposits from Discord are not switched on for this bot yet. ECON can enable them; "
-                                            "meanwhile `/bank deposit` shows the exact in-game steps.")
+            return await reply(interaction, (svc.deposits.not_ready_message() if svc.deposits else "")
+                               or "Deposits from Discord are not switched on for this bot yet.")
         m = _linked(svc, interaction)
         if not m:
             return await reply(interaction, NOT_LINKED)
@@ -329,7 +329,9 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         if not m:
             return await interaction.response.send_message(NOT_LINKED, ephemeral=True)
         if not (svc.deposits and svc.deposits.available()):
-            return await interaction.response.send_message("Direct deposits are not switched on for this bot.", ephemeral=True)
+            return await interaction.response.send_message(
+                (svc.deposits.not_ready_message() if svc.deposits else "") or "Direct deposits are not switched on for this bot.",
+                ephemeral=True)
         await open_form(interaction, "Your PnW API key", [dict(label="Paste your API key (it is hidden from everyone)", placeholder="your PnW API key", max=64)], submit_key)
 
     async def panel_deposit(interaction, parsed):

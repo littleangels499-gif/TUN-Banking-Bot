@@ -45,7 +45,7 @@ def register(bank: app_commands.Group, svc: Services):
     async def status_card() -> A.Card:
         c = A.Card("🏝️ Offshore", "Where our funds physically sit. Moving funds between our banks **never changes anyone's balance**.", A.BLUE)
         try:
-            combined, per = await live_holdings(svc.pnw, svc.settings)
+            combined, per = await live_holdings(svc.pnw, svc.settings, svc.db)
             snap = await svc.prices.get()
             for name, held in per.items():
                 c.add(f"{'🏦' if name == 'main' else '🏝️'} {name.title()} bank", fmt.amounts_with_value(held, value_amounts(held, snap)), True)
@@ -97,7 +97,7 @@ def register(bank: app_commands.Group, svc: Services):
             return await reply(interaction, f"I couldn't read those amounts: {exc}")
         reason = reason.strip() or "offshore transfer"
         try:
-            combined, per = await live_holdings(svc.pnw, svc.settings)
+            combined, per = await live_holdings(svc.pnw, svc.settings, svc.db)
         except (PnWRejected, PnWUncertain) as exc:
             return await reply(interaction, f"I can't read the live banks, so nothing was moved: {exc}")
         with svc.db.read() as conn:

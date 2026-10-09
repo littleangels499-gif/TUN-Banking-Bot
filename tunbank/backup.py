@@ -95,4 +95,4 @@ def apply_pending_restore(data_dir: Path, db_path: Path, backup_dir: Path) -> st
         Path(str(db_path) + suffix).unlink(missing_ok=True)
     os.replace(pending, db_path)
     return (f"Restore applied. The previous database was saved as backups/pre-restore-{stamp}.db. "
-            "Run /bank reconcile and check /bank review for anything that happened after the backup.")
+            "Run /ledger reconcile and check /bank review for anything that happened after the backup.")

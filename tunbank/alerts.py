@@ -174,8 +174,8 @@ def integrity_card(f: dict) -> Card:
     if det:
         c.add("Evidence", "```json\n" + json.dumps(det, default=str)[:900] + "\n```")
     todo = {
-        "RESOURCE_SHORTFALL": "No action needed to keep banking running. Run `/bank reconcile` to see the full position per resource.",
-        "NET_POSITION_SHORTFALL": "ECON investigation needed. Run `/bank reconcile` for the position per resource and what to check. "
+        "RESOURCE_SHORTFALL": "No action needed to keep banking running. Run `/ledger reconcile` to see the full position per resource.",
+        "NET_POSITION_SHORTFALL": "ECON investigation needed. Run `/ledger reconcile` for the position per resource and what to check. "
                                   "Withdrawals are paused until the position recovers or the event is resolved.",
     }.get(f["kind"], "Review with `/ledger dashboard`. Nothing was changed automatically; balances are NOT rewritten.")
     c.add("What to do", todo)

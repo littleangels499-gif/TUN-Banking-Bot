@@ -91,7 +91,8 @@ class Scanner:
                     val = value_amounts(n["amounts"], snap)
                 except Exception:  # noqa: BLE001
                     val = None
-                ctx = REC.Ctx(self.s.alliance_id, members, snap.id if snap else None, val, baseline, self.s.bank_ids)
+                ctx = REC.Ctx(self.s.alliance_id, members, snap.id if snap else None, val, baseline, self.s.bank_ids,
+                              self.s.offshore.alliance_id if self.s.offshore else None)
                 out = REC.process_record(conn, rec, ctx)
                 out.valuation = val
                 outcomes.append(out)

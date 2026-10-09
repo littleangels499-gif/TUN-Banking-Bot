@@ -20,6 +20,7 @@ class Ctx:
     valuation: object | None = None  # Valuation of this record (optional)
     baseline: bool = False
     bank_ids: set | None = None      # alliance ids of every bank we manage (main + offshore)
+    offshore_id: int | None = None   # the offshore bank's alliance id (shared-offshore accounting)
 
 
 @dataclass
@@ -125,6 +126,11 @@ def process_record(conn, rec: dict, ctx: Ctx) -> Outcome:
         return Outcome(n["id"], "DUPLICATE", classification=existing["classification"])
 
     ids = _banks(ctx)
+    from . import offshore_ledger as OL
+    if ctx.offshore_id and not ctx.baseline and OL.shared_enabled(conn):
+        routed = _route_shared_offshore(conn, n, ctx, ids)
+        if routed is not None:
+            return routed
     if (n["sender_type"] == 2 and n["sender_id"] in ids and n["receiver_type"] == 2 and n["receiver_id"] in ids
             and n["sender_id"] != n["receiver_id"]):
         return _process_offshore_transfer(conn, n, ctx)
@@ -206,6 +212,105 @@ def _match_member_deposit(conn, n: dict, nation: int, out: "Outcome") -> None:
         out.member_deposit = tid
 
 
+def offshore_payout_debit(conn, record_id: int, offshore_id: int | None) -> None:
+    """A payout the bot made OUT of the shared offshore for THIS alliance (member withdrawal, grant, bulk...) reduces this
+    alliance's share. Safe to call from every place a withdrawal can complete: it never debits the same record twice."""
+    from . import offshore_ledger as OL
+
+    if not offshore_id or not OL.shared_enabled(conn):
+        return
+    r = conn.execute("SELECT id, sender_id, amounts_json FROM pnw_records WHERE id=?", (record_id,)).fetchone()
+    if not r or r["sender_id"] != offshore_id:
+        return
+    hid = OL.host_id(conn)
+    n = {"id": r["id"], "amounts": json.loads(r["amounts_json"])}
+    short = OL.debit_record(conn, n, alliance_id=hid, actor="system:offshore") if hid else dict(n["amounts"])
+    if short:
+        L.raise_event(conn, "RECON", "OFFSHORE_OWNERSHIP_SHORT", ref_type="pnw_record", ref_id=n["id"],
+                      details={"message": f"PnW record #{n['id']} paid out of the shared offshore more than the host alliance's share "
+                                          "covers. Its share was NOT changed for the missing part; ECON must resolve it.",
+                               "short": short}, dedupe_key=f"offshore-short:{n['id']}")
+
+
+def _host_share_follows(conn, n: dict, direction: str, out: Outcome) -> None:
+    """TUN moving funds main -> offshore adds to TUN's share; offshore -> main takes it away. (Shared mode only.)"""
+    from . import offshore_ledger as OL
+    if not OL.shared_enabled(conn):
+        return
+    hid = OL.host_id(conn)
+    if hid is None:
+        return
+    if direction == "TO_OFFSHORE":
+        OL.credit_record(conn, n, alliance_id=hid, actor="system:offshore")
+        out.note += " · added to the host alliance's offshore share"
+    else:
+        short = OL.debit_record(conn, n, alliance_id=hid, actor="system:offshore")
+        out.note += " · taken from the host alliance's offshore share"
+        if short:
+            L.raise_event(conn, "RECON", "OFFSHORE_OWNERSHIP_SHORT", ref_type="pnw_record", ref_id=n["id"],
+                          details={"message": f"PnW record #{n['id']} moved more out of the offshore than the host alliance's share covers.",
+                                   "short": short}, dedupe_key=f"offshore-short:{n['id']}")
+
+
+def _route_shared_offshore(conn, n: dict, ctx: Ctx, ids: set):
+    """Shared-offshore routing. Returns an Outcome, or None to let the normal rules handle the record."""
+    from . import offshore as OFF
+    from . import offshore_ledger as OL
+
+    # (1) a deposit INTO the offshore from an alliance registered as a participant
+    if (n["receiver_type"] == 2 and n["receiver_id"] == ctx.offshore_id and n["sender_type"] == 2
+            and n["sender_id"] not in ids):
+        reg = OL.registered(conn, n["sender_id"])
+        if reg:
+            out = Outcome(n["id"], "OFFSHORE", "OTHER", None, dict(n["amounts"]))
+            B.insert_record(conn, n, direction="IN", classification="OTHER", status="NO_CREDIT", snapshot_id=ctx.snapshot_id)
+            OL.credit_record(conn, n, alliance_id=reg["alliance_id"], actor="system:offshore")
+            L.audit(conn, "system", "OFFSHORE_DEPOSIT", f"alliance:{reg['alliance_id']}",
+                    {"pnw_record_id": n["id"], "amounts": n["amounts"]})
+            out.note = f"Deposit into the shared offshore from {reg['name']} [#{reg['alliance_id']}]: added to their share"
+            return out
+    # (2) a payout the bot made from the offshore on behalf of a registered alliance (tag TUN-OFF<id>)
+    if n["sender_type"] == 2 and n["sender_id"] == ctx.offshore_id:
+        tag = OFF.off_tag(n["note"])
+        row = conn.execute("SELECT * FROM offshore_transfers WHERE id=?", (tag,)).fetchone() if tag else None
+        if row and row["direction"] == "PAYOUT":
+            return _process_offshore_payout(conn, n, ctx, row)
+    return None
+
+
+def _process_offshore_payout(conn, n: dict, ctx: Ctx, row) -> Outcome:
+    from . import offshore_ledger as OL
+
+    out = Outcome(n["id"], "OFFSHORE", "OTHER", None, dict(n["amounts"]))
+    B.insert_record(conn, n, direction="OUT", classification="OTHER", status="NO_CREDIT", snapshot_id=ctx.snapshot_id)
+    ok = (row["status"] in ("PLANNED", "PENDING", "UNCERTAIN") and json.loads(row["amounts_json"]) == n["amounts"]
+          and n["receiver_id"] == row["dest_id"] and n["receiver_type"] == row["dest_type"])
+    if not ok:
+        eid, new = L.raise_event(conn, "RECON", "OFFSHORE_MISMATCH", ref_type="pnw_record", ref_id=n["id"],
+                                 details={"message": f"PnW record #{n['id']} carries the tag of offshore payout #{row['id']} but its "
+                                                     "amounts, destination or state differ. No alliance share was changed.",
+                                          "planned": row["amounts_json"], "seen": n["amounts"]},
+                                 dedupe_key=f"offshore-mismatch:{n['id']}")
+        out.note = "Payout record does not match the plan; ECON was alerted"
+        if new:
+            out.new_events.append(eid)
+        return out
+    now = now_iso()
+    short = OL.debit_record(conn, n, alliance_id=row["alliance_id"], actor="system:offshore", transfer_id=row["id"])
+    conn.execute("UPDATE offshore_transfers SET status='COMPLETED', pnw_record_id=?, completed_at=?, updated_at=?, failure_reason=NULL "
+                 "WHERE id=?", (n["id"], now, now, row["id"]))
+    conn.execute("UPDATE integrity_events SET status='RESOLVED', resolved_by='system', resolved_at=?, resolution_note=? "
+                 "WHERE status='OPEN' AND dedupe_key=?", (now, f"Confirmed by PnW record #{n['id']}", f"offshore-uncertain:{row['id']}"))
+    L.audit(conn, "system", "OFFSHORE_PAYOUT_CONFIRMED", f"offshore:{row['id']}", {"pnw_record_id": n["id"], "alliance_id": row["alliance_id"]})
+    out.note = f"Offshore payout #{row['id']} confirmed by the PnW record; the alliance's share was reduced"
+    if short:
+        L.raise_event(conn, "RECON", "OFFSHORE_OWNERSHIP_SHORT", ref_type="pnw_record", ref_id=n["id"],
+                      details={"message": f"Offshore payout #{row['id']} was larger than the alliance's share. Its share was NOT "
+                                          "changed for the missing part; ECON must resolve it.", "short": short},
+                      dedupe_key=f"offshore-short:{n['id']}")
+    return out
+
+
 def _process_offshore_transfer(conn, n: dict, ctx: Ctx) -> Outcome:
     """Money moved between OUR OWN banks (main <-> offshore). It changes where funds sit physically and
     nothing else: no member balance is touched."""
@@ -230,6 +335,7 @@ def _process_offshore_transfer(conn, n: dict, ctx: Ctx) -> Outcome:
                      (now, f"Confirmed by PnW record #{n['id']}", f"offshore-uncertain:{row['id']}"))
         L.audit(conn, "system", "OFFSHORE_CONFIRMED", f"offshore:{row['id']}", {"pnw_record_id": n["id"]})
         out.note = f"Offshore transfer #{row['id']} confirmed by the PnW record"
+        _host_share_follows(conn, n, direction, out)
         return out
     # not planned by the bot (done in-game) or it doesn't match a plan: record it honestly
     cents = ctx.valuation.total_cents if ctx.valuation is not None else None
@@ -239,6 +345,7 @@ def _process_offshore_transfer(conn, n: dict, ctx: Ctx) -> Outcome:
         (now, now, direction, "seen in PnW; not started from the bot", jdump(n["amounts"]), cents, ctx.snapshot_id, n["id"], now))
     L.audit(conn, "system", "OFFSHORE_OBSERVED", f"offshore:{cur.lastrowid}", {"pnw_record_id": n["id"], "direction": direction})
     out.note = "Funds moved between the main and offshore banks in PnW (not started from the bot)"
+    _host_share_follows(conn, n, direction, out)
     if row:
         eid, new = L.raise_event(conn, "WARNING", "OFFSHORE_MISMATCH", ref_type="pnw_record", ref_id=n["id"],
                                  details={"message": f"PnW record #{n['id']} carries the tag of offshore transfer #{row['id']} "
@@ -393,6 +500,7 @@ def _process_outbound(conn, n: dict, ctx: Ctx) -> Outcome:
                     tx_id=tx_id, snapshot_id=ctx.snapshot_id)
     L.attach_pnw_record(conn, tx_id, n["id"])
     L.complete_withdrawal(conn, tx_id)
+    offshore_payout_debit(conn, n["id"], ctx.offshore_id)
     out.kind, out.classification, out.tx_id = "OUTGOING_LINKED", "OUTGOING_TX", tx_id
     out.note = f"Confirmed transaction #{tx_id} from the PnW bank record"
     return out

@@ -14,6 +14,7 @@ more than the exact market value they gave up.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
@@ -93,6 +94,36 @@ def parse_amount(text: str, from_res: str, available: int) -> int:
         return M.parse_amounts(f"{from_res}={t}")[from_res]
     except (M.AmountError, KeyError) as exc:
         raise ConversionError(f"I couldn't read that amount: {exc}") from exc
+
+
+EXAMPLE = "money=2000000 steel=3000 aluminium=1000 food=50000"
+
+
+def parse_multi(text: str, available: dict | None = None) -> dict:
+    """'money=2m steel=3000 food=all' -> {resource: units}. EVERY item is checked first: one bad item rejects the lot.
+    `res=all` means everything currently available of that resource."""
+    available = available or {}
+    t = (text or "").strip()
+    if not t:
+        raise L.LedgerError(f"Tell me what you want, e.g. `{EXAMPLE}`.")
+
+    def expand(m):
+        try:
+            res = M.resolve_resource(m.group(1))
+        except M.AmountError:
+            return m.group(0)
+        have = available.get(res, 0)
+        if have <= 0:
+            raise L.LedgerError(f"You have no {M.LABELS[res]} available.")
+        return f"{res}={M.units_to_decimal(have)}"
+    t = re.sub(r"([A-Za-z$]+)\s*=\s*(?:all|max)\b", expand, t, flags=re.I)
+    try:
+        parsed = M.parse_amounts(t)
+    except M.AmountError as exc:
+        raise L.LedgerError(f"I couldn't read that: {exc}\nUse the form `{EXAMPLE}`.") from exc
+    if not parsed:
+        raise L.LedgerError(f"Tell me what you want, e.g. `{EXAMPLE}`.")
+    return parsed
 
 
 def execute(conn, *, nation_id: int, quote: Quote, actor: str, idempotency_key: str, holdings: dict | None) -> dict:

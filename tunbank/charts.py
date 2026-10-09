@@ -231,7 +231,7 @@ def vault(conn, snap: Snapshot | None) -> bytes:
     row = conn.execute("SELECT bank_json, started_at FROM reconciliation_runs WHERE bank_json IS NOT NULL "
                        "ORDER BY id DESC LIMIT 1").fetchone()
     if not row:
-        raise ChartError("No reconciliation has run yet. Run /bank reconcile first.")
+        raise ChartError("No reconciliation has run yet. Run /ledger reconcile first.")
     pos = json.loads(row["bank_json"])
     if pos.get("bank") is None or pos.get("alliance_owned") is None:
         raise ChartError("The last reconciliation couldn't read the real PnW bank, so alliance-owned funds are unknown.")

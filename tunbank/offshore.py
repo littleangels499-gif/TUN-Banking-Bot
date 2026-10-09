@@ -49,18 +49,42 @@ class OffshoreService:
         return f"{(reason or 'offshore').strip()[:60]} TUN-OFF{tid}"
 
     # ---------------------------------------------------------------- create
-    def create(self, *, actor: str, amounts: dict, reason: str, key: str, value_cents, snapshot_id) -> tuple[int, bool]:
+    @property
+    def payout_mode(self) -> str:
+        """Payouts are sent from the OFFSHORE bank, so they need the offshore's own credentials."""
+        o = self.s.offshore
+        return "AUTO" if (o and o.bot_key and o.api_key) else "MANUAL"
+
+    def create(self, *, actor: str, amounts: dict, reason: str, key: str, value_cents, snapshot_id,
+               direction: str = "TO_OFFSHORE", alliance_id: int | None = None, dest: tuple | None = None) -> tuple[int, bool]:
+        """direction TO_OFFSHORE = main -> offshore (the original use). direction PAYOUT = the bot sends from the shared
+        offshore on behalf of registered alliance `alliance_id` to dest=(receiver_type, receiver_id)."""
+        from . import offshore_ledger as OL
+
         with self.db.tx() as conn:
             old = conn.execute("SELECT id FROM offshore_transfers WHERE idempotency_key=?", (key,)).fetchone()
             if old:
                 return old["id"], False
             L.assert_can_mutate(conn, None, "withdraw")
+            mode = self.mode
+            if direction == "PAYOUT":
+                if not (OL.shared_enabled(conn) and alliance_id and dest):
+                    raise L.LedgerError("Shared offshore mode is not on, or the payout is incomplete.")
+                if not OL.registered(conn, alliance_id):
+                    raise L.LedgerError("That alliance is not registered in the offshore.")
+                free = OL.spendable(conn, alliance_id)         # share minus payouts already promised
+                short = [M.LABELS[r] for r, a in amounts.items() if free.get(r, 0) < a]
+                if short:
+                    raise L.LedgerError("That alliance's share in the offshore doesn't cover: " + ", ".join(short))
+                mode = self.payout_mode
             now = now_iso()
             cur = conn.execute(
                 "INSERT INTO offshore_transfers(created_at,updated_at,direction,mode,status,actor,reason,amounts_json,"
-                "value_cents,price_snapshot_id,idempotency_key) VALUES(?,?,'TO_OFFSHORE',?,'PLANNED',?,?,?,?,?,?)",
-                (now, now, self.mode, str(actor), reason, jdump(amounts), value_cents, snapshot_id, key))
-            L.audit(conn, actor, "OFFSHORE_PLANNED", f"offshore:{cur.lastrowid}", {"amounts": amounts, "mode": self.mode, "reason": reason})
+                "value_cents,price_snapshot_id,idempotency_key,alliance_id,dest_type,dest_id) VALUES(?,?,?,?,'PLANNED',?,?,?,?,?,?,?,?,?)",
+                (now, now, direction, mode, str(actor), reason, jdump(amounts), value_cents, snapshot_id, key, alliance_id,
+                 dest[0] if dest else None, dest[1] if dest else None))
+            L.audit(conn, actor, "OFFSHORE_PLANNED", f"offshore:{cur.lastrowid}",
+                    {"amounts": amounts, "mode": mode, "reason": reason, "direction": direction, "alliance_id": alliance_id})
             return cur.lastrowid, True
 
     def get(self, tid: int):
@@ -92,8 +116,12 @@ class OffshoreService:
         row = self.get(tid)
         amounts = json.loads(row["amounts_json"])
         try:
-            rec = await self.pnw.bank_withdraw(self.s.offshore.alliance_id, amounts, self.note_for(tid, row["reason"]),
-                                               receiver_type=self.s.alliance_receiver_type, bank=self.s.main)
+            if row["direction"] == "PAYOUT":         # from the shared offshore, to whoever the registered alliance chose
+                rec = await self.pnw.bank_withdraw(row["dest_id"], amounts, self.note_for(tid, row["reason"]),
+                                                   receiver_type=row["dest_type"], bank=self.s.offshore)
+            else:
+                rec = await self.pnw.bank_withdraw(self.s.offshore.alliance_id, amounts, self.note_for(tid, row["reason"]),
+                                                   receiver_type=self.s.alliance_receiver_type, bank=self.s.main)
         except PnWRejected as exc:
             hint = ""
             if any(w in str(exc).lower() for w in ("receiver", "type")):
@@ -109,7 +137,7 @@ class OffshoreService:
         # evidence + link: the record is processed exactly like one seen by the scanner
         def book():
             with self.db.tx() as conn:
-                REC.process_record(conn, rec, REC.Ctx(self.s.alliance_id, members=None, bank_ids=self.s.bank_ids))
+                REC.process_record(conn, rec, REC.Ctx(self.s.alliance_id, members=None, bank_ids=self.s.bank_ids, offshore_id=self.s.offshore.alliance_id if self.s.offshore else None))
                 return conn.execute("SELECT status FROM offshore_transfers WHERE id=?", (tid,)).fetchone()["status"]
         try:
             status = await asyncio.to_thread(book)
@@ -153,14 +181,16 @@ class OffshoreService:
 
     async def lookup(self, tid: int) -> str:
         """Look for the transfer's tag in the main bank's PnW records and book it if found."""
-        recs = await self.pnw.fetch_bankrecs(self.s.main)
+        row = self.get(tid)
+        bank = self.s.offshore if (row and row["direction"] == "PAYOUT") else self.s.main
+        recs = await self.pnw.fetch_bankrecs(bank)
         tag = f"TUN-OFF{tid}"
         mine = [r for r in recs if tag in (r.get("note") or "")]
 
         def apply():
             with self.db.tx() as conn:
                 for r in mine:
-                    REC.process_record(conn, r, REC.Ctx(self.s.alliance_id, members=None, bank_ids=self.s.bank_ids))
+                    REC.process_record(conn, r, REC.Ctx(self.s.alliance_id, members=None, bank_ids=self.s.bank_ids, offshore_id=self.s.offshore.alliance_id if self.s.offshore else None))
                 return conn.execute("SELECT status FROM offshore_transfers WHERE id=?", (tid,)).fetchone()["status"]
         return await asyncio.to_thread(apply)
 

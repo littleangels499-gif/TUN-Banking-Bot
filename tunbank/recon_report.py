@@ -52,7 +52,7 @@ def what_to_do(status: str, short: list[str], lock_reason: str = "") -> str:
         return ("**Withdrawals, conversions and imports are paused until this is cleared.**\n"
                 "1. `/bank review` – deal with any unprocessed PnW records.\n"
                 "2. `/bank records balances` – compare member balances with the real bank.\n"
-                "3. Fix the cause, then run `/bank reconcile` again. Position findings clear themselves once the numbers "
+                "3. Fix the cause, then run `/ledger reconcile` again. Position findings clear themselves once the numbers "
                 "agree; anything else is closed with `/ledger resolve` and a note.")
     return ("**All financial changes are halted.** Run `/ledger dashboard` to see exactly why"
             + (f" (lock reason: {lock_reason})" if lock_reason else "")
@@ -83,6 +83,16 @@ def report_card(result: dict, *, show_figures: bool) -> A.Card:
     else:
         c.add("Resource position", ("⚠️ Short in the bank: " + ", ".join(short)) if short else "✓ Every resource is covered.")
         c.add("Overall net market position", "Unavailable" if net is None else ("✓ positive" if net >= 0 else "⚠️ NEGATIVE"))
+    off = pos.get("offshore")
+    if off and show_figures:
+        lines = []
+        for o in off["owners"]:
+            val = ", ".join(f"{M.LABELS[r]} {(fmt.compact_money if r == 'money' else fmt.compact_number)(v)}" for r, v in o["balances"].items()) or "nothing"
+            lines.append(f"{'🏠' if o['is_host'] else '🤝'} **{o['name']}** [#{o['alliance_id']}] · {val}")
+        un = off["unassigned"]
+        lines.append("➖ **Unassigned** · " + (", ".join(f"{M.LABELS[r]} {(fmt.compact_money if r == 'money' else fmt.compact_number)(v)}"
+                                                      for r, v in un.items()) or "nothing"))
+        c.add("🏝️ Shared offshore · whose funds are in it", "\n".join(lines)[:1000])
     c.add("Liquidity", "Checked separately for every withdrawal: it is refused only if the bank that pays does not "
                        "physically hold the requested resource. A short resource does not stop other withdrawals.")
     for f in result["findings"][:8]:

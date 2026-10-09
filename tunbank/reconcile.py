@@ -17,7 +17,7 @@ from .valuation import snapshot_by_id, value_amounts
 AUTO_RESOLVE = ("STALE_SYNC", "STALE_PRICES", "BANK_UNAVAILABLE")
 # Position findings are recomputed from scratch on every run, so they clear themselves when the position recovers.
 # They are only cleared when the real bank could actually be read (an unreadable bank proves nothing).
-POSITION_KINDS = ("RESOURCE_SHORTFALL", "NET_POSITION_SHORTFALL")
+POSITION_KINDS = ("RESOURCE_SHORTFALL", "NET_POSITION_SHORTFALL", "OFFSHORE_SHORTFALL", "OFFSHORE_NET_SHORTFALL")
 OBSOLETE_KINDS = ("LEDGER_EXCEEDS_BANK",)          # replaced by the three-part position check below
 
 
@@ -286,6 +286,48 @@ def check_bank(conn, holdings, snapshot=None):
     return out
 
 
+def check_offshore(conn, per_bank, snapshot=None):
+    """Shared offshore: the real PnW offshore balance vs the total of every registered alliance's share.
+    Integrity problems (a broken chain, a cache that doesn't match its entries, an unbalanced transfer) are CRITICAL.
+    Shares adding up to MORE than the bank holds is flagged like any other position problem; shares are never altered."""
+    from . import offshore_ledger as OL
+
+    if not OL.shared_enabled(conn):
+        return []
+    out = []
+    ch = OL.verify_chain(conn)
+    if not ch["ok"]:
+        out.append(_f("CRITICAL", "OFFSHORE_CHAIN_BROKEN", "The offshore ownership ledger's hash chain is broken.",
+                      details={"broken_at": ch.get("broken_at")}, key="offshore-chain"))
+    if not OL.cache_matches(conn):
+        out.append(_f("CRITICAL", "OFFSHORE_BALANCE_MISMATCH",
+                      "Stored alliance shares in the offshore don't equal the sum of their ledger entries.", key="offshore-cache"))
+    bad = conn.execute("SELECT COUNT(*) FROM (SELECT group_id, resource FROM offshore_entries WHERE entry_type='TRANSFER' "
+                       "GROUP BY 1,2 HAVING SUM(delta) != 0)").fetchone()[0]
+    if bad:
+        out.append(_f("CRITICAL", "OFFSHORE_TRANSFER_UNBALANCED", f"{bad} transfer(s) between alliance shares don't net to zero.",
+                      key="offshore-transfer"))
+    physical = (per_bank or {}).get("offshore")
+    if physical is None:
+        return out
+    diff = OL.unassigned(physical, OL.totals(conn))               # physical - assigned; negative = shares exceed the bank
+    short = {r: -d for r, d in diff.items() if d < 0}
+    if short:
+        v = value_amounts(diff, snapshot)
+        net = v.total_cents if (v.usable_for_limits and v.total_cents is not None) else None
+        out.append(_f("WARNING", "OFFSHORE_SHORTFALL",
+                      f"The alliances' shares in the shared offshore add up to MORE than it physically holds for {len(short)} "
+                      f"resource(s): {', '.join(M.LABELS[r] for r in short)}. No share was changed.",
+                      details={"short": short, "net_value_cents": net}, key="offshore-shortfall"))
+        tol = int(float(cfg_get(conn, "recon_net_tolerance") or 0) * 100)
+        if net is not None and net < -tol:
+            out.append(_f("RECON", "OFFSHORE_NET_SHORTFALL",
+                          "Overall, the shares owed to alliances are worth MORE than the shared offshore holds at current prices. "
+                          "This needs ECON investigation; nothing was adjusted to hide it.",
+                          details={"net_value_cents": net, "short": short}, key="offshore-net-shortfall"))
+    return out
+
+
 def check_stuck(conn):
     out = []
     minutes = cfg_int(conn, "stuck_tx_minutes")
@@ -371,6 +413,7 @@ def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggere
     if snapshot is None:
         snapshot = snapshot_by_id(conn, snapshot_id)
     findings += check_bank(conn, holdings, snapshot)
+    findings += check_offshore(conn, per_bank, snapshot)
 
     new_events = []
     for f in findings:
@@ -399,6 +442,10 @@ def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggere
     if holdings is not None:
         npos = net_position(conn, holdings, snapshot)
         pos["resources"], pos["net_cents"], pos["missing_prices"] = npos["resources"], npos["net_cents"], npos["missing_prices"]
+    if per_bank and per_bank.get("offshore") is not None:
+        from . import offshore_ledger as OL
+        if OL.shared_enabled(conn):
+            pos["offshore"] = OL.summary(conn, per_bank["offshore"])
     state = L.integrity_state(conn)
     status = state["state"]                                 # NORMAL / WARNING / RECONCILIATION_REQUIRED / EMERGENCY_LOCK
     pos["status"] = status

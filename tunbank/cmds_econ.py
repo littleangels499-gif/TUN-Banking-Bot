@@ -42,7 +42,7 @@ def register(bank: app_commands.Group, svc: Services):
         warn = None
         per_bank = None
         try:
-            live, per_bank = await live_holdings(svc.pnw, svc.settings)
+            live, per_bank = await live_holdings(svc.pnw, svc.settings, svc.db)
         except (PnWRejected, PnWUncertain) as exc:
             live = None
             warn = f"{icons.status('warn')} Could not read the live PnW bank ({exc}). Showing ledger-only figures."
@@ -113,15 +113,15 @@ def register(bank: app_commands.Group, svc: Services):
             ("Review queue", "⚠️", "secondary", b_review), ("Export balances", "📤", "secondary", b_export)],
             refresh=build_vault))
 
-    # ------------------------------------------------------- /bank scandeposits
-    @bank.command(name="scandeposits", description="ECON: scan PnW bank records now")
-    async def scandeposits(interaction: discord.Interaction):
+    # ------------------------------------------------------- /bank sync
+    @bank.command(name="sync", description="Banker: read PnW's bank records now (deposits, tax collections, loan payments)")
+    async def sync(interaction: discord.Interaction):
         if not await need(svc, interaction, "BANKER"):
             return
         await thinking(interaction)
         res = await svc.scanner.scan()
         if not res.ok:
-            return await reply(interaction, f"Scan failed: {res.error}")
+            return await reply(interaction, f"Sync failed: {res.error}")
         await post_outcomes(svc, res.outcomes)
         await svc.alerts.flush_events()
         kinds = {}
@@ -131,13 +131,19 @@ def register(bank: app_commands.Group, svc: Services):
         extra = ("\n**First scan:** existing PnW history was stored as evidence but NOT credited "
                  "(opening balances cover it). Use `/bank review` to credit anything missing."
                  if res.baseline else "")
-        await reply(interaction, f"Scanned {res.seen} PnW record(s): {txt}.{extra}")
+        new_tax = sum(1 for o in res.outcomes if o.kind == "TAX")
+        tax = f"\nPnW's tax feed returned {res.tax_seen} tax record(s), {new_tax} of them new."
+        if res.tax_error:
+            tax = f"\n⚠️ The tax feed could not be read: {res.tax_error}"
+        elif not res.tax_seen:
+            tax = "\nPnW returned no tax records for the last 14 days. Check that tax is switched on for your brackets in-game."
+        await reply(interaction, f"Read {res.seen} PnW record(s): {txt}.{tax}{extra}")
 
-    # ------------------------------------------------------- /bank reconcile
+    # ------------------------------------------------------- /ledger reconcile
     async def do_reconcile(interaction_actor: str):
         snap = await svc.prices.get()
         try:
-            live, per_bank = await live_holdings(svc.pnw, svc.settings)
+            live, per_bank = await live_holdings(svc.pnw, svc.settings, svc.db)
         except (PnWRejected, PnWUncertain):
             live, per_bank = None, None
 
@@ -152,14 +158,6 @@ def register(bank: app_commands.Group, svc: Services):
     def recon_card(result, show_bank: bool = False) -> A.Card:
         from .recon_report import report_card
         return report_card(result, show_figures=show_bank)
-
-    @bank.command(name="reconcile", description="ECON: run a full reconciliation now")
-    async def reconcile(interaction: discord.Interaction):
-        if not await need(svc, interaction, "AUDITOR"):
-            return
-        await thinking(interaction)
-        result = await do_reconcile(f"discord:{interaction.user.id}")
-        await reply(interaction, card=recon_card(result, has_flag(svc, interaction, 'bank_view_alliance_holdings')))
 
     svc.do_reconcile = do_reconcile  # used by the background loop
 
@@ -365,7 +363,7 @@ def register(bank: app_commands.Group, svc: Services):
             return ap_id, None, (f"This transfer needs a second approver. Request #{ap_id} was posted to the "
                                  "ECON log. After they approve, run this same command again.")
 
-    svc.actions.update(reserve=reserve.callback, reconcile=reconcile.callback, holdings=holdings.callback)
+    svc.actions.update(reserve=reserve.callback, holdings=holdings.callback)
     RS.attach(svc, reserve, "nation")
     RS.attach(svc, withdraw, "destination", "member")
     _ = (LIM, REC, importer, X, xlsx_file)

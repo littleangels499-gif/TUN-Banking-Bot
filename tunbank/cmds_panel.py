@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
 import discord
@@ -44,57 +45,9 @@ def panel_card() -> A.Card:
     return c
 
 
-# ------------------------------------------------------------------ resource + details flow
-class PickView(discord.ui.View):
-    """Private screen: choose a resource, then press the button to fill in the details."""
-
-    def __init__(self, user_id: int, *, title: str, options: list, fields: list, on_submit, button_label="Enter details"):
-        super().__init__(timeout=600)
-        self.user_id, self.title, self.fields, self.on_submit = user_id, title, fields, on_submit
-        self.res: str | None = None
-        self.select = discord.ui.Select(placeholder="1 · Choose a resource", min_values=1, max_values=1,
-                                        options=[discord.SelectOption(label=label[:100], value=value) for value, label in options][:25])
-        self.select.callback = self._picked
-        self.go = discord.ui.Button(label=f"2 · {button_label}", emoji="✏️", style=discord.ButtonStyle.primary)
-        self.go.callback = self._open
-        self.add_item(self.select)
-        self.add_item(self.go)
-
-    def card(self) -> A.Card:
-        c = A.Card(self.title, "Choose a resource, then press the button to enter the details. Nothing happens until you confirm.", A.BLUE)
-        c.add("Resource", M.LABELS[self.res] if self.res else "— not chosen yet —")
-        return c
-
-    async def _mine(self, interaction) -> bool:
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This belongs to someone else.", ephemeral=True)
-            return False
-        return True
-
-    async def _picked(self, interaction):
-        if await self._mine(interaction):
-            self.res = self.select.values[0]
-            await interaction.response.edit_message(embed=A.to_embed(self.card()), view=self)
-
-    async def _open(self, interaction):
-        if not await self._mine(interaction):
-            return
-        if not self.res:
-            return await interaction.response.send_message("Choose a resource first.", ephemeral=True)
-        res = self.res
-
-        async def submitted(i2, *values):
-            await thinking(i2)
-            await self.on_submit(i2, res, *values)
-        await open_form(interaction, f"{self.title} · {M.LABELS[res]}", self.fields, submitted)
-
-
-def _parse(res: str, text: str, available: int | None = None) -> dict:
-    """'5m' / '1,000' / 'all' -> {res: units}. Raises LedgerError with a message fit for the member."""
-    units = CV.parse_amount(text, res, available or 0)
-    if units <= 0:
-        raise L.LedgerError("The amount must be more than zero.")
-    return {res: units}
+# ------------------------------------------------------------------ amounts: several resources in ONE request
+EXAMPLE = CV.EXAMPLE
+parse_multi = CV.parse_multi
 
 
 def register(bankset: app_commands.Group, svc: Services):
@@ -108,27 +61,24 @@ def register(bankset: app_commands.Group, svc: Services):
         with svc.db.read() as conn:
             return {r: v for r, v in L.spendable(conn, nation_id).items() if v > 0}
 
-    # ---------------------------------------------------------------- Withdraw to Me / Send Funds
+    # ---------------------------------------------------------------- Withdraw to Me / Send Funds / Deposit Funds
+    AMOUNTS = dict(label="What (resource=amount, any number)", placeholder=EXAMPLE + "   (food=all works too)", max=400, long=True)
+
     async def b_withdraw(interaction):
         m = member(interaction)
         if not m:
             return await interaction.response.send_message(NOT_LINKED, ephemeral=True)
-        free = spendable(m["nation_id"])
-        if not free:
+        if not spendable(m["nation_id"]):
             return await interaction.response.send_message(
                 "You have no available funds to withdraw. (Locked funds can't be withdrawn; ask ECON.)", ephemeral=True)
 
-        async def submit(i, res, amount, note):
+        async def submit(i, amounts, note):
             try:
-                parsed = _parse(res, amount, spendable(m["nation_id"]).get(res, 0))
+                parsed = parse_multi(amounts, spendable(m["nation_id"]))
             except L.LedgerError as exc:
                 return await reply(i, str(exc))
             await acts["member_withdraw"](i, parsed, note)
-        view = PickView(interaction.user.id, title="💸 Withdraw to me", button_label="Enter amount",
-                        options=[(r, f"{M.LABELS[r]} · {M.fmt_units(r, v)} available") for r, v in free.items()],
-                        fields=[dict(label="Amount", placeholder="e.g. 5m, 1,000,000 or all", max=30),
-                                dict(label="Note (optional)", required=False, max=100)], on_submit=submit)
-        await interaction.response.send_message(embed=A.to_embed(view.card()), view=view, ephemeral=True)
+        await open_form(interaction, "Withdraw to me", [AMOUNTS, dict(label="Note (optional)", required=False, max=100)], submit_after_thinking(submit))
 
     async def b_send(interaction):
         m = member(interaction)
@@ -137,24 +87,18 @@ def register(bankset: app_commands.Group, svc: Services):
         with svc.db.read() as conn:
             if not cfg_bool(conn, "member_send_enabled"):
                 return await interaction.response.send_message("Sending funds to other nations is switched off by ECON right now.", ephemeral=True)
-        free = spendable(m["nation_id"])
-        if not free:
+        if not spendable(m["nation_id"]):
             return await interaction.response.send_message("You have no available funds to send. (Locked funds can't be sent.)", ephemeral=True)
 
-        async def submit(i, res, recipient, amount, note):
+        async def submit(i, recipient, amounts, note):
             try:
-                parsed = _parse(res, amount, spendable(m["nation_id"]).get(res, 0))
+                parsed = parse_multi(amounts, spendable(m["nation_id"]))
             except L.LedgerError as exc:
                 return await reply(i, str(exc))
             await acts["member_send"](i, recipient, parsed, note)
-        view = PickView(interaction.user.id, title="📤 Send funds", button_label="Recipient & amount",
-                        options=[(r, f"{M.LABELS[r]} · {M.fmt_units(r, v)} available") for r, v in free.items()],
-                        fields=[dict(label="Recipient nation", placeholder="nation id, link or exact name", max=100),
-                                dict(label="Amount", placeholder="e.g. 5m, 1,000,000 or all", max=30),
-                                dict(label="Note (optional)", required=False, max=100)], on_submit=submit)
-        await interaction.response.send_message(embed=A.to_embed(view.card()), view=view, ephemeral=True)
+        await open_form(interaction, "Send funds", [dict(label="Recipient nation", placeholder="nation id, link or exact name", max=100),
+                                                   AMOUNTS, dict(label="Note (optional)", required=False, max=100)], submit_after_thinking(submit))
 
-    # ---------------------------------------------------------------- Deposit Funds
     async def b_deposit(interaction):
         m = member(interaction)
         if not m:
@@ -165,16 +109,19 @@ def register(bankset: app_commands.Group, svc: Services):
             await thinking(interaction)
             return await acts["member_api_help"](interaction)
 
-        async def submit(i, res, amount):
+        async def submit(i, amounts):
             try:
-                parsed = _parse(res, amount)
+                parsed = parse_multi(amounts)
             except L.LedgerError as exc:
                 return await reply(i, str(exc))
             await acts["member_deposit"](i, parsed)
-        view = PickView(interaction.user.id, title="📥 Deposit funds", button_label="Enter amount",
-                        options=[(r, M.LABELS[r]) for r in M.RESOURCES],
-                        fields=[dict(label="Amount to deposit", placeholder="e.g. 5m or 250,000", max=30)], on_submit=submit)
-        await interaction.response.send_message(embed=A.to_embed(view.card()), view=view, ephemeral=True)
+        await open_form(interaction, "Deposit funds", [dict(AMOUNTS, label="Deposit what (resource=amount, any number)")], submit_after_thinking(submit))
+
+    def submit_after_thinking(fn):
+        async def wrapper(interaction, *values):
+            await thinking(interaction)
+            await fn(interaction, *values)
+        return wrapper
 
     # ---------------------------------------------------------------- the persistent panel
     class PanelView(discord.ui.View):
