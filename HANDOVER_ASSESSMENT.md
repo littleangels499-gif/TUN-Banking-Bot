@@ -70,3 +70,10 @@ Note: `/deposit restore` was merged into the existing `/bankset importopening` (
 * **Trade monitoring:** migration 010, `trademon.py`, `/trade …`. Alert-only. Price / Nationalist / Embargo rules share one engine, one configuration and the configuration audit log.
 * **Needs checking against live PnW:** the `trades` query fields (the bot falls back to looking nations up itself if PnW refuses the nested sender/receiver fields) and the `me { nation { …resources } }` query used by Deposit Excess. Errors are shown in `/trade status` and in the member's reply.
 * Embargo opt-out cannot be read from the API; alerts say GAME ALLOWED · TUN POLICY VIOLATED and never claim the member opted out.
+
+## 12. Corrections round (multi-resource, command cleanup, shared offshore)
+* **Multi-resource:** all panel amount boxes (withdraw, send, deposit, conversion) take any number of resources, all-or-nothing, one confirmation. Slash commands already did. Loans stay cash-only by nature.
+* **Command cleanup (merged because identical in behaviour):** `/bank reconcile` + `/audit run` + `/ledger reconcile` → **`/ledger reconcile`**; `/bank transactions` + `/audit transactions` → **`/audit transactions`**; `/tax paid` (alias) → **`/tax report`**; `/bank scandeposits` + `/tax sync` → **`/bank sync`**. Kept (different purposes): balance vs dashboard, lock vs emergencylock, holdings vs chart vault, and the view/set pairs.
+* **API key command:** the "key" form only opens when `CREDENTIAL_ENCRYPTION_KEY` and a verified bot key are set; the bot now says exactly which is missing.
+* **Shared offshore:** migration 011, `offshore_ledger.py`, `/offshore …`, record routing, reconciliation, payouts. TUN's holdings = main + TUN's share only. See guide 17.
+* **Deliberately not done:** reassigning shares needs one Admin, not two (add two-person approval if you want it); a registered alliance's own staff cannot yet request withdrawals themselves (an Admin runs `/offshore send` for them).

@@ -1,6 +1,6 @@
 # 15 · Reconciliation: what the statuses mean and what to do
 
-Reconciliation compares three things and **never rewrites a balance** to make numbers agree. Run it with `/bank reconcile` or `/ledger reconcile`;
+Reconciliation compares three things and **never rewrites a balance** to make numbers agree. Run it with `/ledger reconcile` or `/ledger reconcile`;
 the bot also runs it every minute.
 
 ## The three questions
@@ -35,7 +35,7 @@ Staff without the `bank_view_alliance_holdings` permission see the status and wh
 ## What to do
 * **WARNING** – nothing is needed to keep banking running. To clear it: check `/bank review` for deposits not yet credited, move the short
   resource into the bank, or correct members' balances with `/bank adjust` if they are wrong.
-* **RECONCILIATION REQUIRED** – `/bank review`, then `/bank records balances` to compare, fix the cause, run `/bank reconcile` again.
+* **RECONCILIATION REQUIRED** – `/bank review`, then `/bank records balances` to compare, fix the cause, run `/ledger reconcile` again.
 * **EMERGENCY LOCK** – `/ledger dashboard` shows why. Resolve the events with `/ledger resolve`, then lift the lock with `/bank emergency`.
 
 ## Setting

@@ -251,7 +251,7 @@ class Cmd(unittest.TestCase):
 
     def test_reconcile_and_emergency_lock_commands(self):
         self.fund_alice({"money": 1000000})
-        i = self.call(self.bank, "reconcile", self.admin)
+        i = self.call(self.ledger, "reconcile", self.admin)
         self.assertIn("RECONCILIATION", i.text())
         ch = discord.app_commands.Choice("on", "on")
         self.call(self.ledger, "emergencylock", self.admin, ch, "test drill")
@@ -271,7 +271,7 @@ class Cmd(unittest.TestCase):
         self.call(self.bankset, "setrole", self.admin, discord.app_commands.Choice("BANKER", "BANKER"), discord.Role(5))
         with self.db.read() as c:
             self.assertEqual(R.check_chains(c), [])
-        i = self.call(self.bank, "reconcile", self.admin)
+        i = self.call(self.ledger, "reconcile", self.admin)
         self.assertIn("NORMAL", i.text(), i.text())
 
     def test_nation_fields_accept_id_name_link_username_and_mention(self):
@@ -343,7 +343,7 @@ class Cmd(unittest.TestCase):
         i = self.call(self.audit, "transactions", self.admin)
         self.assertIsNotNone(i.sent[-1].get("view"))
         self.assertIn("Page 1 of 2", i.sent[-1]["embed"].footer_text if hasattr(i.sent[-1]["embed"], "footer_text") else "Page 1 of 2")
-        i = self.call(self.bank, "transactions", self.admin, status="NOPE")
+        i = self.call(self.audit, "transactions", self.admin, status="NOPE")
         self.assertIsNone(i.sent[-1].get("view"))
 
     def test_staff_lists_and_vault_render(self):
@@ -373,7 +373,7 @@ class Cmd(unittest.TestCase):
         self.fund_alice({"money": 1000000, "coal": 500})
         self.pnw.recs.append(rec(960, 2, {"money": 777}, "tax", tax_id=3))
         self.run_async(self.svc.scanner.scan())
-        self.call(self.bank, "reconcile", self.admin)
+        self.call(self.ledger, "reconcile", self.admin)
         for name in ("mybalance", "mytrend"):
             i = self.call(self.chart, name, self.alice)
             files = [m.get("file") for m in i.sent if m.get("file")]
@@ -878,7 +878,7 @@ class Cmd(unittest.TestCase):
         from tunbank import bot as botmod
         b = botmod.TunBankBot(self.settings, self.db)
         self.run_async(b.setup_hook())
-        self.assertEqual(sorted(b.tree.cmds), ["audit", "bank", "bankset", "bulk", "chart", "deposit", "grant", "ledger", "loan", "nation", "tax", "trade"])
+        self.assertEqual(sorted(b.tree.cmds), ["audit", "bank", "bankset", "bulk", "chart", "deposit", "grant", "ledger", "loan", "nation", "offshore", "tax", "trade"])
 
 
 class OffshoreCmd(Cmd):
@@ -1120,9 +1120,9 @@ class OffshoreCmd(Cmd):
         self.assertNotIn("LEDGER_EXCEEDS_BANK", {f["kind"] for f in res["findings"]})
         # ownership vs physical: members own $1M; if BOTH banks together hold less, the overall position is negative:
         # that needs ECON's attention (RECONCILIATION REQUIRED) but is not an integrity failure, so no emergency lock
-        i = self.call(self.bank, "reconcile", self.admin)
+        i = self.call(self.ledger, "reconcile", self.admin)
         self.pnw.holdings, self.pnw.off_holdings = {"money": 10}, {"money": 10}
-        i = self.call(self.bank, "reconcile", self.admin)
+        i = self.call(self.ledger, "reconcile", self.admin)
         with self.db.read() as c:
             self.assertEqual(L.integrity_state(c)["state"], "RECONCILIATION_REQUIRED")
             self.assertFalse(L.integrity_state(c)["emergency_lock"])
@@ -1250,7 +1250,7 @@ class SecurityCmd(Cmd):
         t = self.call(self.bank, "holdings", self.finance).text()
         self.assertIn("9,876,543", t)
         self.assertIn("ALLIANCE-OWNED", t)
-        self.call(self.bank, "reconcile", self.admin)
+        self.call(self.ledger, "reconcile", self.admin)
         self.assertTrue(any(m.get("file") for m in self.call(self.chart, "vault", self.finance).sent))
         self.assertTrue(any(m.get("file") for m in self.call(self.bank, "records", self.finance, discord.app_commands.Choice("vault", "vault")).sent))
         self.assertIn("9,876,543", self.call(self.bank, "holdings", self.admin).text())          # Admins always

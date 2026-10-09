@@ -12,7 +12,7 @@ Do these in order. Everything here is done with slash commands typed in Discord 
 
 ## 2. Test the connection to PnW (with tiny amounts!)
 1. The very first time the bot starts, it automatically does a "baseline" scan: all existing PnW bank history is stored as
-   evidence **without crediting anyone** (your opening balances are what count for the past). Run `/bank scandeposits`
+   evidence **without crediting anyone** (your opening balances are what count for the past). Run `/bank sync`
    to confirm the scanner works — you should see no errors.
    *If a member deposited after your Locutus export but before the first start, that deposit was stored as history and
    not credited. Find its record number with `/bank records kind:deposits` (Status = BASELINE) and credit it with
@@ -28,7 +28,7 @@ Do these in order. Everything here is done with slash commands typed in Discord 
 4. The **preview** shows members found/missing, totals, current market value and any errors. Bad rows (duplicates, negatives,
    unknown nations, malformed numbers) **block the import**: fix the file and upload it again. Nothing is written until you press **Confirm**.
 5. Each nation/resource can get an opening balance only once, and it can never be edited afterwards.
-6. Run `/bank reconcile`. Compare `/bank holdings` — member-held totals must not exceed what the PnW bank really holds.
+6. Run `/ledger reconcile`. Compare `/bank holdings` — member-held totals must not exceed what the PnW bank really holds.
 
 ## 4. Members link their nation
 Each member runs `/nation link nation:123456` (their PnW Discord username must match; the bot explains if not), then `/bank dashboard`.

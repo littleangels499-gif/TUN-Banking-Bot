@@ -22,7 +22,7 @@ Save it to a safe place (cloud drive / another disk). It contains every balance,
    If anything is wrong it says so and changes nothing.
 3. Press **Confirm**, then in Railway: **Deployments → ⋯ → Restart**.
 4. On start-up the bot saves your current database as `pre-restore-....db`, swaps in the backup, and starts.
-5. Afterwards run `/bank reconcile` and `/bank review`. Anything that happened *after* the backup was made (new deposits,
+5. Afterwards run `/ledger reconcile` and `/bank review`. Anything that happened *after* the backup was made (new deposits,
    withdrawals) is not in the restored books: deposits are re-detected from PnW automatically; withdrawals sent after the backup
    will show up as "outside TUN Bank" for ECON to review.
 

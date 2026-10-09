@@ -122,14 +122,14 @@ class TestTaxFeed(unittest.TestCase):
             self.assertEqual(L.get_balances(c, 1, "AVAILABLE")["money"], 50000)   # the deposit was still credited
             self.assertIn("taxrecs", L.get_state(c, "last_tax_fetch_error"))
             self.assertNotEqual(L.get_state(c, "tax_feed_started"), "1")          # not "started" until it really works
-        out = self.call(self.tax, "sync", self.banker).text()
+        out = self.call(self.bank, "sync", self.banker).text()
         self.assertIn("tax feed could not be read", out)
 
     def test_tax_sync_reports_what_pnw_returned(self):
         self.scan()
-        self.assertIn("returned no tax records", self.call(self.tax, "sync", self.banker).text())
+        self.assertIn("returned no tax records", self.call(self.bank, "sync", self.banker).text())
         self.pnw.taxrecs = [self.tax_rec(8701, 1, 100.0, "2026-10-02 22:00:01")]
-        out = self.call(self.tax, "sync", self.banker).text()
+        out = self.call(self.bank, "sync", self.banker).text()
         self.assertIn("returned 1 tax record(s), 1 of them new", out)
 
     def test_profile_reads_the_current_bracket_from_pnw_without_any_setup(self):

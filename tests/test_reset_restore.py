@@ -679,7 +679,7 @@ class TestMigration007(unittest.TestCase):
                 rows = [tuple(r)[:17] for r in c.execute("SELECT * FROM ledger_entries ORDER BY id")]
         finally:
             DBMOD.MIGRATIONS_DIR = real
-        self.assertEqual(db.migrate(backup_dir=d / "bk"), ["007_negative_balances_reset_restore_loans.sql", "008_resource_conversion.sql", "009_loans.sql", "010_trade_monitor.sql"])
+        self.assertEqual(db.migrate(backup_dir=d / "bk"), ["007_negative_balances_reset_restore_loans.sql", "008_resource_conversion.sql", "009_loans.sql", "010_trade_monitor.sql", "011_shared_offshore.sql"])
         self.assertEqual(len(list((d / "bk").glob("pre-migration-*.db"))), 1)
         with db.read() as c:
             self.assertEqual(L.verify_chain(c, "ledger_entries"), chain)

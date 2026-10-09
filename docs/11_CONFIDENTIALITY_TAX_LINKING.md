@@ -44,5 +44,5 @@ rates are read live from PnW (`/tax brackets`), and `/tax profile` shows each me
 
 * The first time the bot reads the tax list on a database, the older turns are stored but **not announced**; only new turns are posted.
 * A tax record is never treated as a deposit, even if PnW left its tax id empty.
-* If PnW refuses the tax list, deposits keep working and `/tax sync` tells you exactly what PnW said.
+* If PnW refuses the tax list, deposits keep working and `/bank sync` tells you exactly what PnW said.
 * To receive the per-turn summary you still need a channel: `/bankset setlogchannel` (kind: Tax alerts), and `/bankset setaccess` to give a role `bank_view_tax`.

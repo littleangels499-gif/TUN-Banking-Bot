@@ -19,12 +19,12 @@
 `transactions` · `resolvetx` · `review` · `records` (Excel exports)
 
 **`/bankset`** (Admin settings; Discord allows only 25 commands per group, so these live in their own group)
-`setrole` · `setaccess` / `access` · `setlogchannel` · `importopening` · `/deposit reset` · `conversionpanel` (see guide 13) · `/loan …` (see guide 14) · `panel` · `excess` · `/trade …` (see guide 16) · `config` · `seticon` / `icons` · `addbanker` / `removebanker` / `listbankers` · `limits` · `settransferlimit` ·
+`setrole` · `setaccess` / `access` · `setlogchannel` · `importopening` · `/deposit reset` · `conversionpanel` (see guide 13) · `/loan …` (see guide 14) · `panel` · `excess` · `/trade …` (see guide 16) · `/offshore …` (see guide 17) · `config` · `seticon` / `icons` · `addbanker` / `removebanker` / `listbankers` · `limits` · `settransferlimit` ·
 `setdailylimit` · `setrolelimit` · `setnationlimit` · `requireapproval` · `backup` · `restorestage`
 
 `/chart vault · members · deposits · tax · nation` (staff charts)
 
-`/tax sync · dashboard · report · paid · profile · brackets · exemptions · export` (period filters: 7 / 30 / 90 days / all)
+`/bank sync · dashboard · report · paid · profile · brackets · exemptions · export` (period filters: 7 / 30 / 90 days / all)
 
 `/bulk template · send · status · resume`
 

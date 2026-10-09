@@ -1,5 +1,7 @@
 # 16 · The TUN Bank panel and trade monitoring
 
+> **Several resources at once.** Every amounts box takes any number of resources in one request, e.g. `money=2000000 steel=3000 aluminium=1000 food=50000` (`food=all` also works for withdrawals and sends). Everything is checked first, you confirm once, and if one item is invalid or short the **whole** request is refused with nothing partly done. The conversion panel works the same way (several resources into one).
+
 ## A. The banking panel
 Post it once (Admin): `/bankset panel` (optionally `channel:#bank`). It is remembered, so running it again **re-posts** the panel and removes the old one.
 The buttons never expire and keep working after the bot restarts.

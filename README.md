@@ -20,6 +20,7 @@ either a real PnW bank record or a documented opening balance.
 | 10 | [docs/10_OFFSHORE.md](docs/10_OFFSHORE.md) | Offshore bank, which PnW credentials are needed, grants |
 | 12 | [docs/12_MEMBER_DEPOSITS_AND_AUDIT.md](docs/12_MEMBER_DEPOSITS_AND_AUDIT.md) | Depositing from Discord, deposit notes, the configuration audit log |
 | 11 | [docs/11_CONFIDENTIALITY_TAX_LINKING.md](docs/11_CONFIDENTIALITY_TAX_LINKING.md) | Who sees what, tax alerts, linking, deposits |
+| 17 | [docs/17_SHARED_OFFSHORE.md](docs/17_SHARED_OFFSHORE.md) | Shared offshore: several alliances, one physical bank |
 | 16 | [docs/16_PANEL_AND_TRADE_MONITOR.md](docs/16_PANEL_AND_TRADE_MONITOR.md) | The TUN Bank panel (buttons) and trade monitoring |
 | 15 | [docs/15_RECONCILIATION.md](docs/15_RECONCILIATION.md) | Reconciliation statuses: resource level, net position, liquidity |
 | 14 | [docs/14_LOANS.md](docs/14_LOANS.md) | Loans: record, repay (#loan), deduct, write off, overdue alerts |

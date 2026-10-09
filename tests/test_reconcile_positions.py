@@ -195,7 +195,7 @@ class TestOldBlanketLockIsLifted(ReconBase):
 
 class TestReport(ReconBase):
     def test_report_shows_every_resource_the_overall_position_and_the_status(self):
-        i = self.call(self.bank, "reconcile", self.admin)
+        i = self.call(self.ledger, "reconcile", self.admin)
         text = i.text()
         flat = text.replace("\n", " ")
         for want in ("TUN BANK RECONCILIATION", "WARNING", "Cash", "Bank $96.00K", "Members $100.00K",
@@ -205,7 +205,7 @@ class TestReport(ReconBase):
         self.assertLess(flat.index("Cash"), flat.index("Food"))                          # shortages are listed first
 
     def test_steel_owed_by_members_shows_as_covered(self):
-        text = self.call(self.bank, "reconcile", self.admin).text()
+        text = self.call(self.ledger, "reconcile", self.admin).text()
         line = [ln for ln in text.splitlines() if "Steel" in ln][0]
         self.assertIn("Members -500", line)
         self.assertIn("✓", line)
@@ -215,7 +215,7 @@ class TestReport(ReconBase):
             c.execute("INSERT INTO role_permissions(level,role_id) VALUES('AUDITOR','66')")
         aud = discord.User(401, "aud")
         aud.roles = [discord.Role(66)]
-        text = self.call(self.bank, "reconcile", aud).text()
+        text = self.call(self.ledger, "reconcile", aud).text()
         self.assertIn("Short in the bank: Cash", text)
         self.assertNotIn("$96", text)
         self.assertNotIn("Bank $", text)

@@ -256,15 +256,16 @@ class TestPanel(ConvBase):
         return i
 
     def pick(self, conv, from_res, to_res):
-        for sel, val, handler in ((conv.from_select, from_res, conv._picked_from), (conv.to_select, to_res, conv._picked_to)):
-            sel.values = [val]
-            self.run_async(handler(TC_FI(self.alice)))
+        """Choose what to receive; `from_res` is remembered and used by amount_modal (the screen now takes a free-text list)."""
+        self._from = from_res
+        conv.to_select.values = [to_res]
+        self.run_async(conv._picked_to(TC_FI(self.alice)))
 
     def amount_modal(self, conv, text, auto_confirm=True):
         i = TC_FI(self.alice, auto_confirm=auto_confirm)
         self.run_async(conv.amount_button.callback(i))
         modal = i.modal
-        modal.amount.value = text
+        modal.children[0].value = text if "=" in text else f"{self._from}={text}"
         self.run_async(modal.on_submit(i))
         return i
 
@@ -284,7 +285,7 @@ class TestPanel(ConvBase):
         self.post()
         i = self.open_converter()
         conv = i.sent[-1]["view"]
-        self.assertEqual([o.value for o in conv.from_select.options], ["food"])      # only what she can convert
+        self.assertIn("1,000", conv.card().fields[1][1])                             # the screen lists what she can convert
         self.pick(conv, "food", "steel")
         j = self.amount_modal(conv, "all")
         text = j.text()
@@ -306,12 +307,10 @@ class TestPanel(ConvBase):
         self.post()
         conv = self.open_converter().sent[-1]["view"]
         self.pick(conv, "food", "steel")
-        self.assertIn("only have", self.amount_modal(conv, "9999999").text())
+        self.assertIn("don't have enough", self.amount_modal(conv, "9999999").text())
         self.assertIn("couldn't read", self.amount_modal(conv, "lots").text())
         self.pick(conv, "food", "food")
-        i = TC_FI(self.alice)
-        self.run_async(conv.amount_button.callback(i))
-        self.assertIn("two different", i.text())
+        self.assertIn("into itself", self.amount_modal(conv, "100").text())
         self.assertEqual(self.count("conversions"), 0)
 
     def test_price_move_between_quote_and_confirm_converts_nothing(self):
@@ -351,10 +350,10 @@ class TestPanel(ConvBase):
         self.assertIn("/nation link", i.text())
         conv = self.open_converter().sent[-1]["view"]
         i = TC_FI(TR.discord.User(777, "stranger"))
-        conv.from_select.values = ["food"]
-        self.run_async(conv._picked_from(i))
+        conv.to_select.values = ["steel"]
+        self.run_async(conv._picked_to(i))
         self.assertIn("belongs to someone else", i.text())
-        self.assertIsNone(conv.from_res)
+        self.assertIsNone(conv.to_res)
 
     def test_switched_off_and_nothing_to_convert(self):
         self.post()

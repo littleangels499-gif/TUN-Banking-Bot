@@ -1,3 +1,5 @@
+> **Several alliances share your offshore?** See guide 17 (shared offshore). This guide describes the basic main → offshore transfer.
+
 # 10. Offshore, credentials and grants
 
 ## The flow
@@ -46,7 +48,7 @@ and the same command becomes automatic.
 1. `/bank offshore` (no amounts): both banks should show real contents.
 2. Move **$1** main → offshore. In manual mode: send it in-game with the tag; check it turns ✅ Completed. In auto mode: check it completes.
 3. With a test member balance of $1, `/bank withdrawself money=1` → it must be paid **from the offshore** and show Completed.
-4. `/bank reconcile` → should say OK.
+4. `/ledger reconcile` → should say OK.
 If PnW rejects the "alliance" receiver in step 2 (automatic mode), tell me the exact message: the receiver type for an alliance is
 a setting (`ALLIANCE_RECEIVER_TYPE`, default 2) that I could not confirm offline.
 

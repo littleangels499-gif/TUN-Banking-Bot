@@ -6,7 +6,7 @@ Nothing is ever deleted: a reset is a **recorded ledger event**, and the restore
 ## Before you start
 1. `/bankset backup` — download a backup (the bot also makes one automatically before the database upgrade).
 2. `/bank lock` (reason: "balance migration") — pauses withdrawals. `/deposit reset` refuses to run otherwise.
-3. Let any in-flight withdrawals finish (`/bank transactions`, `/bank resolvetx`).
+3. Let any in-flight withdrawals finish (`/audit transactions`, `/bank resolvetx`).
 4. Export your Locutus balances to `.xlsx` or `.csv` (see "Spreadsheet format").
 
 ## Step 1 — `/deposit reset`  (Admin)
