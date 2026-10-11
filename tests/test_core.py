@@ -58,6 +58,17 @@ class FakePnW:
             raise PnWUncertain("down")
         return list(self.off_recs if self._is_off(bank) else self.recs)
 
+    world: dict = {}                                   # every nation in the (fake) game, in any alliance: {id: name}
+
+    async def search_nations_by_name(self, text):
+        t = text.lower()
+        rows = [dict(id=i, nation_name=n, alliance_id=None, alliance=None) for i, n in self.world.items() if t in n.lower()]
+        exact = [r for r in rows if r["nation_name"].lower() == t]
+        return exact or rows
+
+    async def fetch_nations_info(self, ids):
+        return {i: dict(id=i, nation_name=self.world[i], alliance_id=None, alliance=None) for i in ids if i in self.world}
+
     async def fetch_taxrecs(self, bank=None):
         if getattr(self, "taxrecs_error", None):
             raise PnWRejected(self.taxrecs_error)

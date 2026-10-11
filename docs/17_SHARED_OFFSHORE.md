@@ -13,10 +13,11 @@ The bot is never invited to another alliance's Discord. Other alliances are entr
 * Nothing is hard-coded to TUN: the host alliance is just the registered alliance marked as host. Registering a third, fourth… alliance is one command.
 
 ## Turning it on (once)
-1. `/offshore enable` (Admin). Nothing moves in PnW. Everything the offshore holds right now is recorded as **TUN's share**, so nothing changes for you today.
+1. `/offshore enable` (Admin). Nothing moves in PnW and **nothing is assigned**: every alliance starts at zero and the whole offshore shows as *unassigned*. (Until step 3, TUN cannot pay anything out of the offshore, and reconciliation warns.)
 2. `/offshore registry action:Add alliance:15485` (Rising Nations). Optionally `role:@RN-ECON` (a role in *this* server) so those people can see **only** RN's account.
-3. Split what is there with `/offshore reassign from:<TUN> to:<RN> amounts:"money=3b steel=4000 aluminum=8000" reason:"initial split"`.
-   To carve out a share for a new alliance from funds nobody owns: `/offshore release` (takes it out of one share → unassigned) then `/offshore assign`.
+3. Record each alliance's **real starting share**, including TUN's own:
+   `/offshore adjustownership alliance:<TUN> amounts:"money=6b steel=5000 aluminum=10000" reason:"Locutus export 2026-10-12"`, then the same for Rising Nations and any other alliance.
+   It is an **accounting correction only: nothing moves in PnW.** You see before/after and how the combined shares compare with the real offshore, you confirm, and it is audited permanently (who, when, why, before, after, what the offshore held). Use `replace_all:True` to also zero every resource you didn't list.
 
 ## How ownership changes (always from something real)
 | Event | Effect on shares |
@@ -33,6 +34,11 @@ The bot is never invited to another alliance's Discord. Other alliances are entr
 Every deposit and withdrawal entry must cite a real PnW record that matches its amount (the database refuses it otherwise),
 and a record can only be counted once. The ownership entries are hash-chained and can never be edited or deleted.
 
+## Transactions made outside this bot (e.g. by Locutus)
+* Money leaving the offshore **to a registered alliance's own bank** reduces **that alliance's** share automatically (the destination proves whose it is). It is never taken from TUN.
+* Money a registered alliance **sends into** the offshore credits that alliance.
+* Anything else touching the offshore that can't be attributed (a nation paying in, a payout to a nation made outside the bot, an unregistered alliance) is **never assigned automatically**. It is listed as **unexplained** in `/ledger reconcile` and `/offshore status` until an Admin investigates and uses `/offshore attribute`.
+
 ## Reconciliation
 Compared: the offshore's **real PnW holdings** vs the **sum of every registered share** (and, for TUN, main bank + TUN's share vs members' balances as before).
 ```
@@ -46,7 +52,7 @@ Unassigned        nothing        →  RECONCILED
   prices → 🟠 RECONCILIATION REQUIRED (`OFFSHORE_NET_SHORTFALL`). **No share is touched.**
 * A broken ownership hash chain, a stored share that doesn't match its entries, or an unbalanced transfer → 🔴 critical integrity problem.
 * Funds in the bank that nobody owns yet show as **Unassigned** (not an error).
-* Run it with `/ledger reconcile`; the report shows the per-alliance picture to people allowed to see it.
+* The shared-offshore part of `/ledger reconcile` reports three things **separately**: **A** resource by resource (owned > held, and held > owned, side by side, so a surplus never hides a shortage), **B** overall market value (held vs recorded ownership), and **C** unexplained transactions. Shares are never changed to make them match.
 
 ## Who can see what
 | Person | Sees |
@@ -65,3 +71,7 @@ Moving TUN's own funds main → offshore is still `/bank offshore` (or the panel
 * `/offshore send` needs the offshore's own PnW credentials (`OFFSHORE_API_KEY` + a verified `OFFSHORE_BOT_KEY`). Without them it prepares the payout and shows the in-game steps (note `TUN-OFF<id>`).
 * An alliance can only be deactivated when its share is empty and it has no payout in progress.
 * Migration 011 rebuilds the `offshore_transfers` table (every row copied; its "cannot be COMPLETED without a real PnW record" protection is kept).
+
+## RN and other alliances using other bots
+RN currently uses Locutus, so RN's balance is tracked here from what really happens in the offshore bank, whoever starts it. Nothing is deducted from TUN for RN's activity.
+Letting another alliance's own staff withdraw through this bot would need an authorization model (who may ask, with the offshore's own API credentials doing the sending); it is not built yet and `/offshore send` stays Admin-only.

@@ -50,6 +50,8 @@ class Cmd(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.tmp.name) / "t.db")
         self.db.migrate()
+        from tunbank import identity as _identity
+        _identity.init(self.db)                       # the same name cache the real bot starts with
         self.pnw = PnW2()
         self.settings = self.make_settings()
         prices = PriceService(self.db, self.pnw)
@@ -279,7 +281,7 @@ class Cmd(unittest.TestCase):
         for typed in ("1", "#1", "ALPHA", "alpha", "alice", "@Alice", "<@111>", "Alpha",
                       "https://politicsandwar.com/nation/id=1"):
             i = self.call(self.bank, "freeze", self.admin, typed, "test")
-            self.assertIn("Account #1 frozen", i.text(), typed)
+            self.assertIn("[#1] frozen", i.text(), typed)
         self.call(self.bank, "unfreeze", self.admin, "alice", "done")
         with self.db.read() as c:
             self.assertEqual(c.execute("SELECT frozen FROM members WHERE nation_id=1").fetchone()[0], 0)
@@ -1346,7 +1348,8 @@ class SecurityCmd(Cmd):
             self.assertEqual(L.get_member(c, 2)["discord_id"], "222")
         # the same Discord account cannot silently take a second nation either
         i = self.call(self.bank, "linknation", self.admin, bob, "3")
-        self.assertIn("already linked to nation [#2]", i.text())
+        self.assertIn("already linked to", i.text())
+        self.assertIn("[#2]", i.text())
         with self.db.read() as c:
             self.assertEqual(L.get_member(c, 2)["discord_id"], "222")
         # an Admin can replace it deliberately, with both people shown and the change logged

@@ -20,9 +20,14 @@ The buttons never expire and keep working after the bot restarts.
 * If a member's API access isn't ready the panel says: *"Your PnW API access is not configured. Please link your nation and enable the required API access…"* with a button to save the key. Keys are stored encrypted and never shown or logged.
 * **Send Funds** can be switched off with `member_send_enabled` (`/bankset config`). It can send to any valid PnW nation; keep the member transfer limit (`/bankset settransferlimit`) set to what you are comfortable with. Every send is also posted to the ECON log.
 
-### Excess limits (Deposit Excess)
-`/bankset excess limits:"money=50m food=250k coal=10k"` sets the most a nation should keep. Anything above, for the resources you list, is "excess".
-`/bankset excess` with no limits shows the current setting; `limits:none` clears it. (There is no separate warchest feature yet; when there is, these limits can feed it.)
+### Excess limits (Deposit Excess): per city
+`/bankset excess limits:"money=5m food=10k steel=500 aluminum=500 gasoline=300"` sets the most a nation should keep **per city**.
+**Permitted holding = amount per city × the nation's current city count** (read live from PnW), independently for every resource you list.
+Example: food 10,000 per city → 5 cities 50,000, 10 cities 100,000, 20 cities 200,000, 30 cities 300,000. A 20-city nation holding 250,000 food has **50,000 food of excess**.
+* The button shows holdings, permitted, excess and the market value of the excess for every resource at once, and deposits them **in one request** after one confirmation.
+* If PnW can't return the holdings or the city count reliably, nothing is deposited and the member is told why. It never tries to deposit more than the nation holds. Crediting happens only after PnW's real bank record appears.
+* `/bankset excess` with nothing typed shows the current limits; `limits:none` clears them.
+* The earlier fixed-amount setting (`excess_holdings`) is kept in the database but no longer used.
 
 ## B. Trade monitoring
 It watches **completed** trades of our members and posts an **alert only when a rule is broken**. It never cancels, reverses, punishes or touches a balance.

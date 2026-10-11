@@ -223,6 +223,10 @@ class TestLoanService(LoanBase):
         self.assertEqual(self.count("loans"), 1)
 
     def test_overdue_is_detected_and_announced_once(self):
+        """With automatic recovery switched OFF the old behaviour remains: one alert to ECON, nothing taken."""
+        from tunbank.config import cfg_set
+        with self.db.tx() as c:
+            cfg_set(c, "loan_auto_recovery", "0", "9")
         lid = self.make(days=1)
         with self.db.read() as c:
             self.assertEqual(LN.newly_overdue(c), [])

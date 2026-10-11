@@ -77,3 +77,11 @@ Note: `/deposit restore` was merged into the existing `/bankset importopening` (
 * **API key command:** the "key" form only opens when `CREDENTIAL_ENCRYPTION_KEY` and a verified bot key are set; the bot now says exactly which is missing.
 * **Shared offshore:** migration 011, `offshore_ledger.py`, `/offshore …`, record routing, reconciliation, payouts. TUN's holdings = main + TUN's share only. See guide 17.
 * **Deliberately not done:** reassigning shares needs one Admin, not two (add two-person approval if you want it); a registered alliance's own staff cannot yet request withdrawals themselves (an Admin runs `/offshore send` for them).
+
+## 13. Latest round (nation names, per-city excess, ownership setup, linking, loan recovery)
+* **Nation names:** one central `identity` cache (`nation_names`, migration 013) filled from every PnW call, refreshed every 24 h by a background job that also fills names for OLD records. `/bank withdraw` and every nation field now search ALL of PnW by name (exact, case variants, close suggestions); autocomplete uses the same cache + PnW. Confirmation cards, histories, grants, loans, audit/config logs (at display time), exports, link messages and import errors show `Name [#id]`; unknown names show `Unknown Nation (ID: n)`. IDs remain the real identifiers everywhere.
+* **Excess per city:** `excess_per_city` (old fixed setting kept, unused). Limit = per-city amount × live city count.
+* **Shared offshore:** `/offshore enable` assigns nothing; `/offshore adjustownership` records real starting shares (audited, moves nothing); reconciliation reports resource level, market value and unexplained transactions separately; payouts to a registered alliance's bank made outside our bot reduce THAT alliance's share.
+* **Linking:** self-service find-my-nation + staff `/nation autolink` (needs the optional Members intent). No silent linking.
+* **Loans:** automatic overdue recovery against the cash deposit (migration 012), once per loan, audited, ECON + member notified.
+* **To verify live:** the PnW name search (`nations(nation_name:…)`) and the nation `discord` / `num_cities` fields. Failures are reported to the user in plain words rather than guessed around.

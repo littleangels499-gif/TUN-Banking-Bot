@@ -46,3 +46,12 @@ rates are read live from PnW (`/tax brackets`), and `/tax profile` shows each me
 * A tax record is never treated as a deposit, even if PnW left its tax id empty.
 * If PnW refuses the tax list, deposits keep working and `/bank sync` tells you exactly what PnW said.
 * To receive the per-turn summary you still need a channel: `/bankset setlogchannel` (kind: Tax alerts), and `/bankset setaccess` to give a role `bank_view_tax`.
+
+
+---
+
+## Linking your nation: `/nation link` finds it for you
+* **Members:** run `/nation link` with the box **empty**. The bot looks for the alliance nation whose PnW page shows **your current Discord username**; if it finds exactly one it asks you to confirm. If none matches it tells you to set your username in PnW (Account → Settings). If two nations show the same username it **refuses to guess** and asks for your nation id. An existing link is never overwritten.
+  This is safe because *you* run it, so the match is made against your username at that moment.
+* **Staff, in bulk:** `/nation autolink` (Admin) lists every nation whose PnW username matches **exactly one** server member, skipping ambiguous and already-linked ones, and links them after you confirm. It needs the bot to be able to see the member list: switch on **Server Members Intent** in the Discord developer portal *and* add `ENABLE_MEMBERS_INTENT=1` to `.env` / Railway Variables (the bot won't start if you enable the intent in `.env` but not in the portal). Without it the command explains this and members use `/nation link`.
+* Why not link silently? A username on a PnW page is typed by that nation's owner, and Discord usernames can change hands, so a match is a strong hint, not proof; both paths above keep a human confirming.

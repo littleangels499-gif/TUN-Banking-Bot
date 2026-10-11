@@ -29,3 +29,25 @@ Only the **money** part is applied; other resources in the same record are repor
 ## Migrating Locutus loans
 1. Put the loan amounts in the `loan` column of the restore spreadsheet (guide 13). They are saved safely with the import.
 2. After the restore, run `/loan adopt`. Each becomes an active loan with the outstanding amount.
+
+
+---
+
+## Automatic recovery of overdue loans
+When a loan becomes **overdue** (its due date has passed and something is still owed) the bot settles it **once, automatically**, against the member's **cash deposit**.
+It is an internal accounting entry: **no PnW transaction is made and nothing is taken from their nation.**
+
+Example: a member owes $500M, the loan is overdue, and their cash deposit is $200M.
+* $200M is taken from their cash deposit (**recovered**).
+* The other $300M leaves their cash balance **negative (−$300M)**.
+* The loan is closed (`PAID`) but its full history stays; one `loan_recoveries` record keeps: the original loan, the amount due, the amount recovered, the amount moved to the negative balance, cash before and after, the date and the reason. The audit log gets the same.
+* The debt now lives in **one** place (the negative cash balance), so it is never counted twice. A member with **no** cash simply goes negative by the whole amount.
+* ECON gets a card with all of that and the remaining amount owed; the member gets a private message (if direct messages are on).
+
+Safety rules
+* Only genuinely overdue loans (a loan with **no due date never goes overdue**). `/loan adopt due_days:N` gives imported loans a due date, which starts the clock.
+* **At most once per loan**: the database refuses a second recovery of the same loan, so repeated checks can never deduct twice.
+* If an emergency lock or open reconciliation problem is active, the recovery waits and is tried again later.
+* Negative cash is handled by the existing rules: it counts against the member's **net deposit worth** (so withdrawals above that are refused), it's valued at face value, and reconciliation treats it as money owed to the alliance (never as other members' funds).
+* Switch it off with `/bankset config loan_auto_recovery 0`; overdue loans then only raise one alert to ECON, as before.
+* New cash deposits reduce the negative balance naturally.
