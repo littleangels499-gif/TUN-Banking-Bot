@@ -17,7 +17,7 @@ from .valuation import snapshot_by_id, value_amounts
 AUTO_RESOLVE = ("STALE_SYNC", "STALE_PRICES", "BANK_UNAVAILABLE")
 # Position findings are recomputed from scratch on every run, so they clear themselves when the position recovers.
 # They are only cleared when the real bank could actually be read (an unreadable bank proves nothing).
-POSITION_KINDS = ("RESOURCE_SHORTFALL", "NET_POSITION_SHORTFALL", "OFFSHORE_SHORTFALL", "OFFSHORE_NET_SHORTFALL")
+POSITION_KINDS = ("RESOURCE_SHORTFALL", "NET_POSITION_SHORTFALL", "OFFSHORE_SHORTFALL", "OFFSHORE_NET_SHORTFALL", "OFFSHORE_UNEXPLAINED")
 OBSOLETE_KINDS = ("LEDGER_EXCEEDS_BANK",)          # replaced by the three-part position check below
 
 
@@ -307,24 +307,34 @@ def check_offshore(conn, per_bank, snapshot=None):
     if bad:
         out.append(_f("CRITICAL", "OFFSHORE_TRANSFER_UNBALANCED", f"{bad} transfer(s) between alliance shares don't net to zero.",
                       key="offshore-transfer"))
+    # ---- C. transactions that could not be attributed to a registered alliance (never assigned automatically)
+    off_id = L.get_state(conn, "offshore_bank_id")
+    un = OL.unexplained(conn, int(off_id) if off_id and off_id.isdigit() else None)
+    if un:
+        out.append(_f("WARNING", "OFFSHORE_UNEXPLAINED",
+                      f"{len(un)} PnW record(s) touching the shared offshore can't be attributed to a registered alliance "
+                      f"(e.g. #{', #'.join(str(u['id']) for u in un[:5])}). Nothing was assigned automatically: find out whose they are, "
+                      "register that alliance if needed, then use /offshore attribute.",
+                      details={"records": [u["id"] for u in un[:25]]}, key="offshore-unexplained"))
     physical = (per_bank or {}).get("offshore")
     if physical is None:
         return out
-    diff = OL.unassigned(physical, OL.totals(conn))               # physical - assigned; negative = shares exceed the bank
-    short = {r: -d for r, d in diff.items() if d < 0}
+    # ---- A. resource by resource (a surplus in one resource never hides a shortage in another)
+    an = OL.analysis(physical, OL.totals(conn), snapshot)
+    short = {r: -v["difference"] for r, v in an["resources"].items() if v["state"] == "SHORT"}
+    excess = {r: v["difference"] for r, v in an["resources"].items() if v["state"] == "EXCESS"}
     if short:
-        v = value_amounts(diff, snapshot)
-        net = v.total_cents if (v.usable_for_limits and v.total_cents is not None) else None
         out.append(_f("WARNING", "OFFSHORE_SHORTFALL",
-                      f"The alliances' shares in the shared offshore add up to MORE than it physically holds for {len(short)} "
-                      f"resource(s): {', '.join(M.LABELS[r] for r in short)}. No share was changed.",
-                      details={"short": short, "net_value_cents": net}, key="offshore-shortfall"))
-        tol = int(float(cfg_get(conn, "recon_net_tolerance") or 0) * 100)
-        if net is not None and net < -tol:
-            out.append(_f("RECON", "OFFSHORE_NET_SHORTFALL",
-                          "Overall, the shares owed to alliances are worth MORE than the shared offshore holds at current prices. "
-                          "This needs ECON investigation; nothing was adjusted to hide it.",
-                          details={"net_value_cents": net, "short": short}, key="offshore-net-shortfall"))
+                      f"Recorded alliance shares EXCEED what the shared offshore physically holds for {len(short)} resource(s): "
+                      f"{', '.join(M.LABELS[r] for r in short)}. No share was changed; check the starting balances and recent transactions.",
+                      details={"short": short, "excess": excess}, key="offshore-shortfall"))
+    # ---- B. overall market value
+    net, tol = an["net_cents"], int(float(cfg_get(conn, "recon_net_tolerance") or 0) * 100)
+    if net is not None and net < -tol:
+        out.append(_f("RECON", "OFFSHORE_NET_SHORTFALL",
+                      "Overall, the recorded shares are worth MORE than the shared offshore holds at current market prices. "
+                      "This needs ECON investigation; nothing was adjusted to hide it.",
+                      details={"net_value_cents": net, "short": short}, key="offshore-net-shortfall"))
     return out
 
 
@@ -445,7 +455,8 @@ def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggere
     if per_bank and per_bank.get("offshore") is not None:
         from . import offshore_ledger as OL
         if OL.shared_enabled(conn):
-            pos["offshore"] = OL.summary(conn, per_bank["offshore"])
+            off_id = L.get_state(conn, "offshore_bank_id")
+            pos["offshore"] = OL.summary(conn, per_bank["offshore"], snapshot, int(off_id) if off_id and off_id.isdigit() else None)
     state = L.integrity_state(conn)
     status = state["state"]                                 # NORMAL / WARNING / RECONCILIATION_REQUIRED / EMERGENCY_LOCK
     pos["status"] = status

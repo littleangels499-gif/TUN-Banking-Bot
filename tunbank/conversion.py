@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal
 
+from . import identity
 from . import ledger as L
 from . import money as M
 from . import reconcile as R
@@ -167,7 +168,7 @@ def execute(conn, *, nation_id: int, quote: Quote, actor: str, idempotency_key: 
             raise AllianceStockShort(
                 "This conversion can't be processed right now. ECON has been notified; your balance is unchanged.",
                 f"Conversion refused: {M.fmt_units(quote.to_res, claim_increase)} {M.LABELS[quote.to_res]} requested but the "
-                f"alliance only owns {M.fmt_units(quote.to_res, max(owned, 0))} (nation {nation_id}).")
+                f"alliance only owns {M.fmt_units(quote.to_res, max(owned, 0))} ({identity.label(nation_id)}).")
 
     L.ensure_member(conn, nation_id)
     cur = conn.execute(

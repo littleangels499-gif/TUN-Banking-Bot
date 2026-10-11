@@ -25,7 +25,7 @@ TITLES = {
 }
 FINANCIAL_KEYS = {"approval_threshold_value", "offshore_access", "offshore_keep_in_main", "grant_min_level", "large_credit_value",
                   "self_withdraw_enabled", "econ_locked_withdraw_enabled", "require_alliance_member_deposit", "opening_import_allowed",
-                  "net_worth_withdraw_limit", "net_worth_include_locked", "conversion_enabled", "conversion_max_value", 
+                  "net_worth_withdraw_limit", "net_worth_include_locked", "conversion_enabled", "conversion_max_value", "loan_auto_recovery", 
                   "member_deposit_enabled", "system_tags", "tag_ignore", "tag_loan", "tag_deposit"}
 
 
@@ -85,7 +85,8 @@ def card_for(row):
     c.add("New", f"`{row['new'] if row['new'] not in (None, '') else '—'}`", True)
     c.add("Action", row["action"], True)
     if row["target"]:
-        c.add("Affected", row["target"], False)
+        from . import identity
+        c.add("Affected", identity.decorate(row["target"]), False)
     c.add("Time", when, True)
     c.footer = f"Audit entry #{row['id']} · permanent record · TUN Bank"
     return c

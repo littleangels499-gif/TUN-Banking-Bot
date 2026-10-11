@@ -9,6 +9,7 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import identity
 from . import fmt
 from . import icons
 from . import ledger as L
@@ -45,6 +46,11 @@ def loan_card(conn, nation_id: int, title: str, *, history: bool = True) -> A.Ca
     c.add("Total still owed", LN.dollars(owed), True)
     c.add("Loans", str(len(loans)), True)
     c.add("Loan details", "\n".join(loan_line(l) for l in loans[:10]))
+    rec = conn.execute("SELECT * FROM loan_recoveries WHERE nation_id=? ORDER BY id DESC LIMIT 5", (nation_id,)).fetchall()
+    if rec:
+        c.add("Automatic recovery (overdue loans settled against the deposit)", "\n".join(
+            f"`{r['ts'][:10]}` loan #{r['loan_id']}: due {LN.dollars(r['due_cents'])} → taken from cash {LN.dollars(r['recovered_cents'])}"
+            + (f", **{LN.dollars(r['deficit_cents'])} now a negative cash balance**" if r["deficit_cents"] else "") for r in rec))
     if history:
         ev = conn.execute("SELECT * FROM loan_events WHERE nation_id=? ORDER BY id DESC LIMIT 8", (nation_id,)).fetchall()
         c.add("Recent history", "\n".join(
@@ -55,7 +61,7 @@ def loan_card(conn, nation_id: int, title: str, *, history: bool = True) -> A.Ca
 
 
 def overdue_card(l) -> A.Card:
-    c = A.Card("⚠️ Loan overdue", f"Loan #{l['id']} · nation #{l['nation_id']}", A.ORANGE, kind="LOAN_OVERDUE")
+    c = A.Card("⚠️ Loan overdue", f"Loan #{l['id']} · {identity.label(l['nation_id'])}", A.ORANGE, kind="LOAN_OVERDUE")
     c.add("Still owed", LN.dollars(LN.owed(l)), True)
     c.add("Was due", (l["due_at"] or "")[:10], True)
     c.add("What now", "Nothing is taken automatically. ECON can use `/loan deduct` (from their deposit) or contact the member.")

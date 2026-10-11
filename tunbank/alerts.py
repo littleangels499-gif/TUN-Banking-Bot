@@ -62,7 +62,8 @@ def to_embed(card: Card):
 
 
 def _who(nation_id, name=None):
-    return f"{name or 'Nation'} [#{nation_id}]" if nation_id else "-"
+    from . import identity
+    return identity.label(nation_id, name) if nation_id else "-"
 
 
 def _money_block(amounts, val):

@@ -119,6 +119,7 @@ def tx_line(r, with_actor: bool = False) -> str:
     ic = TX_ICON.get(r["status"], "⏳")
     top = f"{ic} **#{r['id']}** · {r['status'].replace('_', ' ').title()} · {dollars(r['value_cents'])}"
     who = f" · by <@{r['actor_discord_id']}>" if with_actor else ""
-    sub = (f"-# {SOURCE_LABEL.get(r['funding_source'], r['funding_source'])} → nation [#{r['dest_nation_id']}] · "
+    from . import identity
+    sub = (f"-# {SOURCE_LABEL.get(r['funding_source'], r['funding_source'])} → {identity.label(r['dest_nation_id'])} · "
            f"PnW {r['pnw_record_id'] or '—'} · {r['created_at'][:16].replace('T', ' ')}{who}")
     return top + "\n" + sub

@@ -33,11 +33,59 @@ class Services:
     trade_monitor: object = None
 
     async def announce_overdue_loans(self) -> int:
-        """Tell ECON once about each loan that has just become overdue. Nothing is ever taken automatically."""
+        """Overdue loans: settle each ONE time against the member's cash deposit (if auto recovery is on), tell ECON and the member.
+        Internal accounting only. Safe to run every minute: a loan is recovered at most once."""
+        from . import alerts as A
         from . import cmds_loan
+        from . import fmt
+        from . import identity
         from . import loans as LN
+        from .config import cfg_bool
 
-        def find():
+        def recover():
+            done = []
+            with self.db.read() as conn:
+                auto = cfg_bool(conn, "loan_auto_recovery")
+                ids = [l["id"] for l in LN.overdue_unrecovered(conn)]
+            if not auto:
+                return False, []
+            for lid in ids:
+                try:
+                    with self.db.tx() as conn:
+                        res = LN.recover_overdue(conn, loan_id=lid)
+                except L.LedgerError:
+                    continue                                        # blocked right now (e.g. emergency lock): try again later
+                if res:
+                    done.append(res)
+            return True, done
+        auto, done = await asyncio.to_thread(recover)
+        for r in done:
+            await identity.ensure(self.pnw, [r["nation_id"]]) if getattr(self, "pnw", None) else None
+            who = identity.label(r["nation_id"])
+            c = A.Card("💳 Overdue loan recovered automatically", f"Loan #{r['loan_id']} · {who}", A.ORANGE, kind="LOAN_RECOVERY", nation_id=r["nation_id"])
+            c.add("Original loan", f"{LN.dollars(r['principal_cents'])} + {LN.dollars(r['interest_cents'])} interest", True)
+            c.add("Due since", (r["due_at"] or "")[:10], True)
+            c.add("Amount due", LN.dollars(r["due_cents"]), True)
+            c.add("Recovered from their cash deposit", LN.dollars(r["recovered_cents"]), True)
+            c.add("Moved into a NEGATIVE cash balance", LN.dollars(r["deficit_cents"]), True)
+            c.add("Cash balance", f"{LN.dollars(r['cash_before'])} → **{LN.dollars(r['cash_after'])}**", True)
+            c.add("Still owed", (f"**{LN.dollars(-r['cash_after'])}** (shown as their negative cash balance; it reduces their net deposit "
+                                 "worth and blocks withdrawals above it)") if r["cash_after"] < 0 else "Nothing: their deposit covered it all.")
+            c.add("How", "An internal accounting entry against their deposit. No PnW transaction was made and nothing was taken from their nation.")
+            await self.alerts.econ(c)
+            m = self.alerts.discord_id_for(r["nation_id"])
+            if m:
+                d = A.Card("💳 Your overdue loan was settled", f"Loan #{r['loan_id']} was due {(r['due_at'] or '')[:10]}.", A.ORANGE)
+                d.add("Amount due", LN.dollars(r["due_cents"]), True)
+                d.add("Taken from your deposit", LN.dollars(r["recovered_cents"]), True)
+                if r["cash_after"] < 0:
+                    d.add("You still owe", f"**{LN.dollars(-r['cash_after'])}**. It now shows as a negative cash balance in your account. "
+                                           "New deposits of cash reduce it.")
+                await self.alerts.dm(m, d)
+        if auto:
+            return len(done)
+
+        def find():                                                 # auto recovery is OFF: just tell ECON once, as before
             with self.db.read() as conn:
                 return [dict(l) for l in LN.newly_overdue(conn)]
         late = await asyncio.to_thread(find)

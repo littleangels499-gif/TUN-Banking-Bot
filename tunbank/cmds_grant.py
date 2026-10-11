@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import identity
 from . import fmt
 from . import icons
 from . import ledger as L
@@ -150,7 +151,7 @@ def register(grant: app_commands.Group, svc: Services):
                 return [dict(r) for r in conn.execute("SELECT * FROM grants ORDER BY id DESC LIMIT 40")]
         rows = await asyncio.to_thread(load)
         lines = [f"{ICON.get(g['status'], '')} **#{g['id']}** · {g['status'].title()} · {fmt.dollars(g['value_cents'])}\n"
-                 f"-# to [#{g['recipient_nation_id']}] · {g['purpose'][:70]} · {g['created_at'][:10]}" for g in rows]
+                 f"-# to {identity.label(g['recipient_nation_id'])} · {g['purpose'][:70]} · {g['created_at'][:10]}" for g in rows]
         await paginate(interaction, chunk_cards("🎁 Grants", lines, empty="No grants yet.", per_page=8))
 
     @grant.command(name="list", description="ECON: all grants, newest first")

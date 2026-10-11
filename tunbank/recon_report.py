@@ -85,14 +85,35 @@ def report_card(result: dict, *, show_figures: bool) -> A.Card:
         c.add("Overall net market position", "Unavailable" if net is None else ("✓ positive" if net >= 0 else "⚠️ NEGATIVE"))
     off = pos.get("offshore")
     if off and show_figures:
-        lines = []
-        for o in off["owners"]:
-            val = ", ".join(f"{M.LABELS[r]} {(fmt.compact_money if r == 'money' else fmt.compact_number)(v)}" for r, v in o["balances"].items()) or "nothing"
-            lines.append(f"{'🏠' if o['is_host'] else '🤝'} **{o['name']}** [#{o['alliance_id']}] · {val}")
-        un = off["unassigned"]
-        lines.append("➖ **Unassigned** · " + (", ".join(f"{M.LABELS[r]} {(fmt.compact_money if r == 'money' else fmt.compact_number)(v)}"
-                                                      for r, v in un.items()) or "nothing"))
-        c.add("🏝️ Shared offshore · whose funds are in it", "\n".join(lines)[:1000])
+        an = off["analysis"]
+        mon = lambda r, v: (fmt.compact_money if r == "money" else fmt.compact_number)(v)   # noqa: E731
+        lines = [f"{'🏠' if o['is_host'] else '🤝'} **{o['name']}** [#{o['alliance_id']}] · "
+                 + (", ".join(f"{M.LABELS[r]} {mon(r, v)}" for r, v in o["balances"].items()) or "nothing") for o in off["owners"]]
+        c.add("🏝️ Shared offshore · recorded ownership", "\n".join(lines)[:1000])
+        # A. resource level: shortages and surpluses side by side, never netted
+        rl = []
+        for r, v in sorted(an["resources"].items(), key=lambda kv: (kv[1]["state"] != "SHORT", kv[1]["state"] != "EXCESS", M.RESOURCES.index(kv[0]))):
+            tag = {"SHORT": "⚠️ owned > held", "EXCESS": "➕ held > owned (unassigned)", "OK": "✓"}[v["state"]]
+            rl.append(f"{icons.resource(r)} **{M.LABELS[r]}** · Held {mon(r, v['physical'])} · Owned {mon(r, v['owned'])} · "
+                      f"Diff {'+' if v['difference'] > 0 else ''}{mon(r, v['difference'])} {tag}")
+        for n, t in enumerate(_chunks(rl)):
+            c.add("A · Offshore, resource by resource" if n == 0 else "A · (continued)", t)
+        # B. overall market value
+        if an["net_cents"] is None:
+            c.add("B · Offshore, overall market value", "Unavailable (no reliable price for " + (", ".join(M.LABELS[r] for r in an["missing_prices"]) or "a resource") + ").")
+        else:
+            c.add("B · Offshore, overall market value",
+                  f"Held **{fmt.compact_money(an['value_physical'])}** vs recorded ownership **{fmt.compact_money(an['value_owned'])}** → "
+                  f"difference **{fmt.compact_money(an['net_cents'])}** {'✓' if an['net_cents'] >= 0 else '⚠️'}")
+        # C. unexplained transactions
+        if off["unexplained"]:
+            ul = [f"#{u['id']} · {'IN ' if u['inbound'] else 'OUT'} · "
+                  + ", ".join(f"{M.LABELS[r]} {mon(r, v)}" for r, v in list(u["amounts"].items())[:3])
+                  + f" · {'from' if u['inbound'] else 'to'} {u['sender_id'] if u['inbound'] else u['receiver_id']}" for u in off["unexplained"][:8]]
+            c.add(f"C · Unexplained offshore transactions ({len(off['unexplained'])})",
+                  "\n".join(ul)[:900] + "\nNot assigned to anyone. Investigate, then `/offshore attribute`.")
+        else:
+            c.add("C · Unexplained offshore transactions", "None ✓")
     c.add("Liquidity", "Checked separately for every withdrawal: it is refused only if the bank that pays does not "
                        "physically hold the requested resource. A short resource does not stop other withdrawals.")
     for f in result["findings"][:8]:

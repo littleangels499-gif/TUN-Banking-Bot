@@ -51,6 +51,7 @@ class Settings:
     main_bot_api_key: str = ""
     offshore_nation_id: int | None = None
     alliance_receiver_type: int = 2             # PnW receiver_type for "an alliance" (1 = nation)
+    members_intent: bool = False                 # ENABLE_MEMBERS_INTENT=1 (also switch it on in the Discord developer portal)
     credential_key: str = ""                    # Fernet key that encrypts members' API keys (CREDENTIAL_ENCRYPTION_KEY)
 
     @property
@@ -189,6 +190,7 @@ def load_settings() -> Settings:
         offshore_nation_id=int(nation) if nation.isdigit() else None,
         alliance_receiver_type=int(opt("ALLIANCE_RECEIVER_TYPE") or 2),
         credential_key=opt("CREDENTIAL_ENCRYPTION_KEY"),
+        members_intent=opt("ENABLE_MEMBERS_INTENT").strip().lower() in ("1", "true", "yes", "on"),
     )
 
 
@@ -231,8 +233,10 @@ DEFAULTS: dict[str, tuple[str, str]] = {
     "trade_embargo_enabled": ("1", "1 = alert on trades with members of embargoed alliances"),
     "panel_channel_id": ("", "Discord channel where the TUN Bank panel lives"),
     "panel_message_id": ("", "The posted TUN Bank panel message (set automatically)"),
-    "excess_holdings": ("", "Most a member should keep in their nation, e.g. money=50m food=250k coal=10k. Anything above is 'excess'."),
+    "excess_per_city": ("", "Most a nation should keep PER CITY, e.g. money=5m food=10k steel=500. Limit = amount x the nation's current city count; anything above is 'excess'."),
+    "excess_holdings": ("", "OLD fixed limits (no longer used; kept so nothing is lost). Use excess_per_city."),
     "member_send_enabled": ("1", "1 = members may send their available funds to another nation (Send Funds)"),
+    "loan_auto_recovery": ("1", "1 = when a loan goes OVERDUE it is settled automatically against the member's cash deposit (cash may go negative)"),
     "conversion_enabled": ("1", "1 = members may convert resources inside their TUN Bank balance (ledger only)"),
     "conversion_max_value": ("0", "Largest single conversion, in $ of market value (0 = no cap)"),
     "recon_net_tolerance": ("0", "Reconciliation: overall net shortfall (in $) tolerated before RECONCILIATION REQUIRED is raised"),

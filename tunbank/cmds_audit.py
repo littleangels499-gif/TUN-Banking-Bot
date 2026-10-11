@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import identity
 from . import exports as X
 from . import fmt
 from . import icons
@@ -66,7 +67,7 @@ def register_tax(tax: app_commands.Group, svc: Services):
         c.add("Paying nations", str(len(grouped)), True)
         c.add("Exempt (TUN policy)", str(len([n for n in grouped if n in exempt])) + " paying", True)
         c.add("Top payers · by Current Market Value", "\n".join(
-            f"**{i + 1}.** [#{n}] {fmt.dollars(value_amounts(g['amounts'], snap).total_cents)}"
+            f"**{i + 1}.** {identity.label(n)} {fmt.dollars(value_amounts(g['amounts'], snap).total_cents)}"
             + ("  🧾 exempt" if n in exempt else "") for i, (n, g) in enumerate(ranked)) or "_None yet_")
         by_bracket: dict = {}
         for n, g in grouped.items():
@@ -313,7 +314,7 @@ def register_tax(tax: app_commands.Group, svc: Services):
             return await reply(interaction, f"Not changed: {exc}")
         if outcome == "none":
             return await reply(interaction, "That nation has no active exemption.")
-        card = A.Card(f"{icons.status('tax')} Tax exemption {outcome}", f"[#{nid}] · by <@{actor}>", A.ORANGE, kind="TAX")
+        card = A.Card(f"{icons.status('tax')} Tax exemption {outcome}", f"{identity.label(nid)} · by <@{actor}>", A.ORANGE, kind="TAX")
         card.add("Reason", reason)
         card.add("Remember", "This is TUN bookkeeping only. PnW still collects tax as set in-game.")
         await reply(interaction, card=card)
@@ -367,7 +368,7 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
             else:
                 rows = conn.execute("SELECT * FROM audit_log WHERE actor NOT LIKE 'system%' ORDER BY id DESC LIMIT 20").fetchall()
         lines = [f"`{r['ts'][5:16].replace('T', ' ')}` {'<@' + r['actor'] + '>' if r['actor'].isdigit() else r['actor']} · "
-                 f"**{r['action'].replace('_', ' ').title()}** {r['target'] or ''}" for r in rows]
+                 f"**{r['action'].replace('_', ' ').title()}** {identity.decorate(r['target'] or '')}" for r in rows]
         await paginate(interaction, chunk_cards(f"{icons.status('audit')} Staff activity", lines, per_page=10,
                                                 empty="Nothing logged yet."))
 
@@ -442,7 +443,7 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
             else:
                 rows = conn.execute("SELECT * FROM config_audit ORDER BY id DESC LIMIT 100").fetchall()
         lines = [f"`{r['ts'][5:16].replace('T', ' ')}` <@{r['actor_id']}> · **{r['setting']}**\n"
-                 f"-# {r['previous'] or '—'} → {r['new'] or '—'} · {r['action']}" + (f" · {r['target']}" if r["target"] else "") for r in rows]
+                 f"-# {r['previous'] or '—'} → {r['new'] or '—'} · {r['action']}" + (f" · {identity.decorate(r['target'])}" if r["target"] else "") for r in rows]
         await paginate(interaction, chunk_cards("⚙️ Configuration & security audit", lines, per_page=7,
                                                 empty="No configuration changes recorded yet.",
                                                 intro="Permanent record. Entries can't be edited or deleted."))

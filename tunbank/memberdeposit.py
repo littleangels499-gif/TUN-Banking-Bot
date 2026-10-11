@@ -64,8 +64,8 @@ class MemberDepositService:
         row = CR.get_row(conn, nation_id)
         return bool(row and not row["disabled"] and str(row["discord_id"]) == str(discord_id))
 
-    async def holdings(self, *, nation_id: int, discord_id) -> dict:
-        """The member's own nation holdings, read with THEIR key (for 'Deposit Excess'). Raises CredentialError /
+    async def holdings(self, *, nation_id: int, discord_id) -> tuple[dict, int]:
+        """The member's own (holdings, city count), read with THEIR key (for 'Deposit Excess'). Raises CredentialError /
         PnWRejected / PnWUncertain with messages that never contain the key."""
         def load():
             with self.db.tx() as conn:

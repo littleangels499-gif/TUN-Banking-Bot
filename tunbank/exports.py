@@ -22,6 +22,12 @@ def _num(units):
     return None if units is None else units / M.SCALE
 
 
+def _N(nation_id):
+    """'Igala [#123456]' for a spreadsheet cell: the name for people, the id kept alongside for auditing."""
+    from . import identity
+    return identity.label(nation_id) if nation_id else ""
+
+
 def _sheet(wb, title, headers, rows):
     ws = wb.create_sheet(title)
     ws.append(headers)
@@ -63,7 +69,7 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
                 ["Stale", "YES" if snapshot and snapshot.stale else "no"]]
         _sheet(wb, "Valuation info", ["Item", "Value"], note)
     elif kind == "ledger":
-        rows = [[r["id"], r["ts"], r["nation_id"], r["bucket"], r["resource"], _num(r["delta"]),
+        rows = [[r["id"], r["ts"], _N(r["nation_id"]), r["bucket"], r["resource"], _num(r["delta"]),
                  r["entry_type"], r["pnw_record_id"], r["tx_id"], r["lock_id"], r["batch_id"],
                  r["adjustment_id"], r["actor"], r["note"], r["group_id"], r["price_snapshot_id"]]
                 for r in conn.execute("SELECT * FROM ledger_entries ORDER BY id")]
@@ -72,13 +78,13 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
                               "Price snapshot"], rows)
     elif kind == "deposits":
         rows = [[r["id"], r["record_date"], r["sender_id"], r["classification"], r["status"],
-                 r["credited_nation_id"], r["note"], r["amounts_json"], r["price_snapshot_id"]]
+                 _N(r["credited_nation_id"]), r["note"], r["amounts_json"], r["price_snapshot_id"]]
                 for r in conn.execute("SELECT * FROM pnw_records WHERE direction='IN' ORDER BY id")]
         _sheet(wb, "PnW inbound", ["PnW record", "Date", "Sender nation", "Classification", "Status",
                                    "Credited to", "Note", "Amounts (units/100)", "Price snapshot"], rows)
     elif kind == "withdrawals":
         rows = [[r["id"], r["created_at"], r["tx_type"], r["status"], r["funding_source"],
-                 r["member_nation_id"], r["dest_nation_id"], r["actor_discord_id"],
+                 _N(r["member_nation_id"]), _N(r["dest_nation_id"]), r["actor_discord_id"],
                  r["approver_discord_id"], _num(r["value_cents"]), r["pnw_record_id"], r["note"],
                  r["reason"], r["failure_reason"]]
                 for r in conn.execute("SELECT * FROM transactions ORDER BY id")]
@@ -89,7 +95,7 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
         rows = []
         for r in conn.execute("SELECT * FROM locks ORDER BY id"):
             rem = L.lock_remaining(conn, r["id"])
-            rows.append([r["id"], r["nation_id"], r["lock_type"], r["reason"], r["created_by"],
+            rows.append([r["id"], _N(r["nation_id"]), r["lock_type"], r["reason"], r["created_by"],
                          r["created_at"], *[_num(rem.get(x, 0)) for x in res_cols]])
         _sheet(wb, "Locks", ["Lock", "Nation", "Type", "Reason", "By", "Created",
                              *[f"Remaining {x}" for x in res_cols]], rows)
@@ -109,7 +115,7 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
         _sheet(wb, "By member", ["Nation ID", "Nation", "Exempt", "Period", "Tax records", "Value now $",
                                  *[f"{x}" for x in res_cols], "Bracket id(s)", "PnW record ids (first 40)"], rows)
         _sheet(wb, "Records", ["ID", "PnW record", "Date", "Nation", "Bracket id", "Value now $", *res_cols],
-               [[r["id"], r["pnw_record_id"], r["date"], r["nation_id"], r["tax_id"],
+               [[r["id"], r["pnw_record_id"], r["date"], _N(r["nation_id"]), r["tax_id"],
                  _num(value_amounts(r["amounts"], snapshot).total_cents),
                  *[_num(r["amounts"].get(x, 0)) for x in res_cols]] for r in rs])
         _sheet(wb, "Info", ["Item", "Value"], [
@@ -122,7 +128,7 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
         _sheet(wb, "Offshore transfers", ["ID", "Created", "Direction", "Mode", "Status", "By", "Reason", "Value $ at time",
                                           "PnW record", "Failure", "Amounts (units/100)"], rows)
     elif kind == "grants":
-        rows = [[r["id"], r["created_at"], r["recipient_nation_id"], r["purpose"], r["project"], r["requested_by"], r["approver"],
+        rows = [[r["id"], r["created_at"], _N(r["recipient_nation_id"]), r["purpose"], r["project"], r["requested_by"], r["approver"],
                  r["status"], _num(r["value_cents"]), r["tx_id"], r["pnw_record_id"], r["amounts_json"]]
                 for r in conn.execute("SELECT * FROM grants ORDER BY id")]
         _sheet(wb, "Grants", ["ID", "Date", "Recipient", "Purpose", "Project", "Requested by", "Approver", "Status",
@@ -137,7 +143,7 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
                 for r in conn.execute("SELECT * FROM audit_log ORDER BY id")]
         _sheet(wb, "Audit log", ["ID", "Time", "Actor", "Action", "Target", "Details"], rows)
     elif kind == "integrity":
-        rows = [[r["id"], r["ts"], r["severity"], r["kind"], r["nation_id"], r["status"], r["details_json"],
+        rows = [[r["id"], r["ts"], r["severity"], r["kind"], _N(r["nation_id"]), r["status"], r["details_json"],
                  r["resolved_by"], r["resolved_at"], r["resolution_note"]]
                 for r in conn.execute("SELECT * FROM integrity_events ORDER BY id")]
         _sheet(wb, "Integrity events", ["ID", "Time", "Severity", "Kind", "Nation", "Status", "Details",

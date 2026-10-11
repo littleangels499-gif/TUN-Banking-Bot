@@ -15,6 +15,7 @@ import logging
 import time
 from decimal import Decimal
 
+from . import identity as _identity
 from . import money as M
 
 log = logging.getLogger("tunbank.pnw")
@@ -172,6 +173,9 @@ class PnWClient:
                 raise
             block = data.get("trades") or {}
             out += block.get("data") or []
+            for t in block.get("data") or []:
+                _identity.remember_info(t.get("sender"))
+                _identity.remember_info(t.get("receiver"))
             if not (block.get("paginatorInfo") or {}).get("hasMorePages"):
                 break
         if not self._nested_trades and out:
@@ -190,7 +194,24 @@ class PnWClient:
             data = await self.query(q, {"id": chunk, "n": len(chunk)})
             for r in data.get("nations", {}).get("data") or []:
                 out[int(r["id"])] = r
+                _identity.remember_info(r)
         return out
+
+    async def search_nations_by_name(self, text: str) -> list[dict]:
+        """Nations anywhere in Politics & War whose name matches (not limited to our alliance).
+        Returns exact matches (ignoring capitals) when there are any, otherwise whatever close matches PnW gave.
+        Raises PnWRejected/PnWUncertain if PnW can't be asked, so the caller never pretends 'not found'."""
+        t = " ".join(str(text).split())
+        if not t:
+            return []
+        variants = list(dict.fromkeys([t, t.title(), t.capitalize(), t.lower(), t.upper()]))
+        q = ("query($n:[String]){ nations(nation_name:$n, first:10){ data{ id nation_name alliance_id alliance{ id name } } } }")
+        data = await self.query(q, {"n": variants})
+        rows = data.get("nations", {}).get("data") or []
+        for r in rows:
+            _identity.remember_info(r)
+        exact = [r for r in rows if (r.get("nation_name") or "").lower() == t.lower()]
+        return exact or rows
 
     async def find_alliance(self, text: str) -> list[dict]:
         """An alliance by id or by name -> [{id, name}] (several when a name is ambiguous)."""
@@ -307,6 +328,23 @@ class PnWClient:
             if str(n.get("alliance_position", "")).upper() == "APPLICANT":
                 continue
             out[int(n["id"])] = n.get("nation_name") or ""
+            _identity.remember(n["id"], n.get("nation_name"), self.s.alliance_id)
+        return out
+
+    async def fetch_alliance_discords(self) -> list[dict]:
+        """[{id, nation_name, discord}] for real (non-applicant) alliance members: the Discord username each nation
+        displays on its PnW page. A username is what the NATION'S OWNER typed there: it is a hint, never proof by itself."""
+        q = ("query($id:[Int]){ alliances(id:$id, first:1){ data{ id nations{ id nation_name discord alliance_position } } } }")
+        data = await self.query(q, {"id": [self.s.alliance_id]})
+        rows = data.get("alliances", {}).get("data") or []
+        if not rows:
+            raise PnWRejected("Alliance not found - check ALLIANCE_ID.")
+        out = []
+        for n in rows[0].get("nations") or []:
+            if str(n.get("alliance_position", "")).upper() == "APPLICANT":
+                continue
+            _identity.remember(n["id"], n.get("nation_name"), self.s.alliance_id)
+            out.append({"id": int(n["id"]), "nation_name": n.get("nation_name") or "", "discord": (n.get("discord") or "").strip()})
         return out
 
     async def fetch_tax_brackets(self) -> list[dict]:
@@ -339,6 +377,8 @@ class PnWClient:
              "alliance_position discord } } }")
         data = await self.query(q, {"id": [int(nation_id)]})
         rows = data.get("nations", {}).get("data") or []
+        if rows:
+            _identity.remember(rows[0].get("id"), rows[0].get("nation_name"), rows[0].get("alliance_id") and int(rows[0]["alliance_id"]))
         return rows[0] if rows else None
 
     # ------------------------------------------------------------- writing
@@ -356,17 +396,23 @@ class PnWClient:
         nation = ((data.get("me") or {}).get("nation")) or {}
         return int(nation["id"]) if nation.get("id") not in (None, "") else None
 
-    async def fetch_nation_holdings(self, member_api_key: str) -> dict:
-        """What the nation that owns this key is holding right now ({resource: units}). Used for 'Deposit Excess'.
-        The key is only ever sent to PnW; errors are returned without it."""
+    async def fetch_nation_holdings(self, member_api_key: str) -> tuple[dict, int]:
+        """(what the nation that owns this key is holding right now {resource: units}, its CURRENT city count).
+        Used for 'Deposit Excess'. The key is only ever sent to PnW; errors are returned without it."""
         from .config import BankAccess
 
         probe = BankAccess("member", self.s.alliance_id, member_api_key, None, None)
         fields = " ".join(M.RESOURCES)
-        data = await self.query("{ me { nation { id " + fields + " } } }", bank=probe)
+        data = await self.query("{ me { nation { id num_cities " + fields + " } } }", bank=probe)
         nation = ((data.get("me") or {}).get("nation")) or {}
         if not nation:
             raise PnWRejected("PnW did not return your nation's holdings for this key.")
+        try:
+            cities = int(nation.get("num_cities") or 0)
+        except (TypeError, ValueError):
+            cities = 0
+        if cities < 1:
+            raise PnWRejected("PnW did not return your nation's city count, so the limits can't be worked out reliably.")
         out = {}
         for r in M.RESOURCES:
             try:
@@ -375,7 +421,7 @@ class PnWClient:
                 u = 0
             if u > 0:
                 out[r] = u
-        return out
+        return out, cities
 
     async def bank_deposit(self, amounts: dict, note: str, member_api_key: str, bot_key: str) -> dict:
         """Deposit from the nation that owns `member_api_key` into ITS OWN alliance bank (the mutation has no

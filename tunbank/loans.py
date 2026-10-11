@@ -218,6 +218,55 @@ def is_overdue(loan, now: str | None = None) -> bool:
     return bool(loan["status"] == "ACTIVE" and loan["due_at"] and loan["due_at"] < (now or now_iso()) and owed(loan) > 0)
 
 
+def overdue_unrecovered(conn) -> list:
+    """Overdue loans that have not been recovered (a loan is recovered at most once, ever)."""
+    now = now_iso()
+    return [l for l in conn.execute(
+        "SELECT * FROM loans WHERE status='ACTIVE' AND due_at IS NOT NULL AND due_at < ? "
+        "AND NOT EXISTS (SELECT 1 FROM loan_recoveries r WHERE r.loan_id = loans.id) ORDER BY due_at, id", (now,)).fetchall() if owed(l) > 0]
+
+
+def recover_overdue(conn, *, loan_id: int, actor: str = "system:loans") -> dict | None:
+    """Settle ONE overdue loan against the member's CASH DEPOSIT. Internal accounting only: no PnW transaction exists.
+
+      * the whole amount owed is taken off the member's available cash with ONE LOAN_DEDUCTION ledger entry;
+      * the part their cash could cover is `recovered`, the rest is `deficit`: it leaves the cash balance NEGATIVE, so the
+        debt now lives in exactly one place (the negative cash balance) and is never counted again as a loan;
+      * the loan is closed (PAID) but its history stays; loan_recoveries records original/due/recovered/deficit/cash before+after;
+      * UNIQUE(loan_id) makes a second recovery of the same loan impossible, however often this runs.
+    Returns None when there is nothing to do (not overdue, already recovered, nothing owed)."""
+    loan = conn.execute("SELECT * FROM loans WHERE id=?", (loan_id,)).fetchone()
+    if not loan or not is_overdue(loan):
+        return None
+    if conn.execute("SELECT 1 FROM loan_recoveries WHERE loan_id=?", (loan_id,)).fetchone():
+        return None
+    nation = loan["nation_id"]
+    L.assert_can_mutate(conn, nation, "adjust")                 # blocked by an emergency lock etc.: the caller tries again later
+    due_cents = owed(loan)
+    cash_before = L.get_balances(conn, nation, "AVAILABLE").get("money", 0)
+    recovered = min(max(cash_before, 0), due_cents)
+    deficit = due_cents - recovered
+    i_due, p_due = due(loan)
+    ev = _event(conn, loan_id, nation, "DEDUCTION", interest=i_due, principal=p_due, actor=actor,
+                note="AUTOMATIC recovery: loan overdue, settled against the cash deposit")
+    _settle(conn, loan, i_due, p_due)
+    g = L.new_group("LOAN")
+    L.post_entries(conn, [dict(group_id=g, nation_id=nation, bucket="AVAILABLE", resource="money", delta=-due_cents,
+                               entry_type="LOAN_DEDUCTION", loan_event_id=ev, actor=actor,
+                               note=f"Loan #{loan_id} overdue: automatic recovery")])
+    cash_after = cash_before - due_cents
+    reason = f"Loan #{loan_id} was due {(loan['due_at'] or '')[:10]} and still had {dollars(due_cents)} outstanding"
+    conn.execute("INSERT INTO loan_recoveries(loan_id,nation_id,ts,due_cents,recovered_cents,deficit_cents,cash_before,cash_after,loan_event_id,reason)"
+                 " VALUES(?,?,?,?,?,?,?,?,?,?)", (loan_id, nation, now_iso(), due_cents, recovered, deficit, cash_before, cash_after, ev, reason))
+    L.audit(conn, actor, "LOAN_AUTO_RECOVERY", f"loan:{loan_id}", {
+        "nation": nation, "original_principal_cents": loan["principal_cents"], "original_interest_cents": loan["interest_cents"],
+        "amount_due_cents": due_cents, "recovered_from_cash_cents": recovered, "moved_to_negative_cash_cents": deficit,
+        "cash_before_cents": cash_before, "cash_after_cents": cash_after, "due_at": loan["due_at"], "reason": reason})
+    return {"loan_id": loan_id, "nation_id": nation, "principal_cents": loan["principal_cents"], "interest_cents": loan["interest_cents"],
+            "due_cents": due_cents, "recovered_cents": recovered, "deficit_cents": deficit, "cash_before": cash_before,
+            "cash_after": cash_after, "due_at": loan["due_at"], "reason": reason}
+
+
 def newly_overdue(conn) -> list:
     """Overdue loans ECON has not been told about yet."""
     now = now_iso()

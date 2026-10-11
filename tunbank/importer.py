@@ -21,6 +21,7 @@ import io
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
+from . import identity
 from . import ledger as L
 from . import money as M
 from .config import cfg_bool
@@ -241,7 +242,7 @@ def preview(filename: str, content: bytes, *, members: dict | None, snapshot, mo
                     return None
                 if nid not in members and hits:
                     p.errors.append(f"Row {lineno}: nation_id {nid} does not match the name "
-                                    f"'{str(name_raw).strip()}' (that name belongs to nation {hits[0]}) - row blocked.")
+                                    f"'{str(name_raw).strip()}' (that name belongs to {identity.label(hits[0], members.get(hits[0]))}) - row blocked.")
                     return None
             else:
                 if not hits:
@@ -291,7 +292,7 @@ def preview(filename: str, content: bytes, *, members: dict | None, snapshot, mo
                     entries.append((res, u))
         else:
             if nid in seen_nation_rows:
-                p.errors.append(f"Row {lineno}: nation {nid} ({members[nid]}) is a duplicate - it already appears "
+                p.errors.append(f"Row {lineno}: {identity.label(nid, members.get(nid))} is a duplicate - it already appears "
                                 f"in row {seen_nation_rows[nid]}.")
                 continue
             seen_nation_rows[nid] = lineno
@@ -304,12 +305,12 @@ def preview(filename: str, content: bytes, *, members: dict | None, snapshot, mo
         p.nations.setdefault(nid, {})
         for res, u in entries:
             if (nid, res) in seen_pairs:
-                p.errors.append(f"Row {lineno}: nation {nid} already has {res} in this file (duplicate).")
+                p.errors.append(f"Row {lineno}: {identity.label(nid, members.get(nid))} already has {res} in this file (duplicate).")
                 continue
             seen_pairs.add((nid, res))
             cap = MAX_PER_RESOURCE.get(res, DEFAULT_MAX_RESOURCE_UNITS)
             if abs(u) > cap:
-                p.errors.append(f"Row {lineno}: {res} amount for nation {nid} is impossibly large.")
+                p.errors.append(f"Row {lineno}: {res} amount for {identity.label(nid, members.get(nid))} is impossibly large.")
                 continue
             p.rows.append((nid, res, u))
             p.nations[nid][res] = u
@@ -317,9 +318,9 @@ def preview(filename: str, content: bytes, *, members: dict | None, snapshot, mo
             lu = _cell_units(loan_cell, f"Row {lineno} loan", p.errors, allow_negative=False)
             if lu:
                 if nid in p.loans:
-                    p.errors.append(f"Row {lineno}: nation {nid} already has a loan in this file (duplicate).")
+                    p.errors.append(f"Row {lineno}: {identity.label(nid, members.get(nid))} already has a loan in this file (duplicate).")
                 elif lu > MAX_PER_RESOURCE["money"]:
-                    p.errors.append(f"Row {lineno}: loan for nation {nid} is impossibly large.")
+                    p.errors.append(f"Row {lineno}: loan for {identity.label(nid, members.get(nid))} is impossibly large.")
                 else:
                     p.loans[nid] = lu
 

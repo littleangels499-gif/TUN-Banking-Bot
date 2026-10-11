@@ -149,21 +149,116 @@ def cache_matches(conn) -> bool:
 
 
 # ------------------------------------------------------------------ the operations
-def enable_shared(conn, *, physical: dict, actor: str, host_alliance_id: int, host_name: str) -> dict:
-    """Switch shared mode on WITHOUT changing anything for the host: everything the offshore holds right now is assigned to
-    the host alliance (an OPENING entry per resource, documented). ECON then splits it with /offshore reassign."""
+def enable_shared(conn, *, actor: str, host_alliance_id: int, host_name: str) -> dict:
+    """Switch shared mode on. NOTHING moves and NO share is assigned: every alliance starts at zero and the whole physical
+    offshore shows as 'unassigned'. An Admin then records each alliance's real starting share with /offshore adjustownership."""
     if shared_enabled(conn):
         raise OffshoreError("Shared offshore mode is already on.")
     L.assert_can_mutate(conn, None, "adjust")
-    register(conn, alliance_id=host_alliance_id, name=host_name, actor=actor, is_host=True,
-             note="the alliance that runs this bot")
-    g = L.new_group("OFFS")
-    post(conn, [dict(group_id=g, alliance_id=host_alliance_id, resource=r, delta=v, entry_type="OPENING", actor=actor,
-                     note="Shared offshore enabled: everything physically in the offshore at that moment starts as the host's share")
-                for r, v in physical.items() if v > 0 and r in RESOURCES])
+    register(conn, alliance_id=host_alliance_id, name=host_name, actor=actor, is_host=True, note="the alliance that runs this bot")
     L.set_state(conn, "offshore_shared", "1")
-    L.audit(conn, actor, "OFFSHORE_SHARED_ENABLED", None, {"assigned_to_host": physical})
-    return {"assigned": {r: v for r, v in physical.items() if v > 0}}
+    L.set_state(conn, "offshore_shared_since", now_iso())
+    L.audit(conn, actor, "OFFSHORE_SHARED_ENABLED", None, {"assigned": {}})
+    return {}
+
+
+def correct_ownership(conn, *, alliance_id: int, targets: dict, physical: dict, actor: str, reason: str,
+                      replace_all: bool = False) -> dict:
+    """Set an alliance's RECORDED share to the given amounts (an initial accounting correction). Moves nothing in PnW.
+
+    Resources not listed are left alone unless replace_all (then they become zero). The result is compared with the
+    real offshore and any discrepancy is REPORTED, never hidden or auto-fixed. Fully audited: who, why, when, before, after."""
+    L.assert_can_mutate(conn, None, "adjust")
+    if len((reason or "").strip()) < 5:
+        raise OffshoreError("A reason is required.")
+    if not registered(conn, alliance_id):
+        raise OffshoreError("That alliance is not registered.")
+    before = balances(conn, alliance_id)
+    hold = held(conn, alliance_id)
+    resources = set(targets) | (set(before) if replace_all else set())
+    rows, after = [], dict(before)
+    g = L.new_group("OFFS")
+    for r in sorted(resources):
+        want = targets.get(r, 0)
+        if want < 0:
+            raise OffshoreError("A share can't be negative.")
+        if want < hold.get(r, 0):
+            raise OffshoreError(f"{M.LABELS[r]} can't be set below what payouts in progress have already promised ({M.fmt_units(r, hold[r])}).")
+        d = want - before.get(r, 0)
+        if d == 0:
+            continue
+        rows.append(dict(group_id=g, alliance_id=alliance_id, resource=r, delta=d, entry_type="OPENING" if d > 0 else "ADJUSTMENT",
+                         actor=actor, note=f"[OWNERSHIP CORRECTION] {reason}"))
+        if want:
+            after[r] = want
+        else:
+            after.pop(r, None)
+    if not rows:
+        raise OffshoreError("That is already what's recorded; nothing to change.")
+    post(conn, rows)
+    tot = totals(conn)
+    conn.execute("INSERT INTO offshore_corrections(ts,actor,alliance_id,reason,before_json,after_json,physical_json,totals_after_json,group_id) "
+                 "VALUES(?,?,?,?,?,?,?,?,?)", (now_iso(), str(actor), alliance_id, reason, json.dumps(before, sort_keys=True),
+                                                json.dumps(after, sort_keys=True), json.dumps(physical, sort_keys=True),
+                                                json.dumps(tot, sort_keys=True), g))
+    L.audit(conn, actor, "OFFSHORE_OWNERSHIP_CORRECTED", f"alliance:{alliance_id}",
+            {"before": before, "after": after, "reason": reason, "physical": physical, "shares_total": tot})
+    return {"before": before, "after": after, "totals": tot, "unassigned": unassigned(physical, tot)}
+
+
+def preview_correction(conn, *, alliance_id: int, targets: dict, replace_all: bool) -> dict:
+    """What the alliance's share would be after a correction, and the combined shares of everyone (no writes)."""
+    before = balances(conn, alliance_id)
+    after = dict(before)
+    for r in (set(targets) | (set(before) if replace_all else set())):
+        want = targets.get(r, 0)
+        if want:
+            after[r] = want
+        else:
+            after.pop(r, None)
+    tot = dict(totals(conn))
+    for r in set(before) | set(after):
+        tot[r] = tot.get(r, 0) - before.get(r, 0) + after.get(r, 0)
+    return {"before": before, "after": after, "totals_after": {r: v for r, v in tot.items() if v}}
+
+
+def analysis(physical: dict, tot: dict, snapshot=None) -> dict:
+    """Resource by resource AND overall value, kept apart so a surplus in one resource never hides a shortage in another."""
+    from .valuation import value_amounts
+
+    rows = {}
+    for r in RESOURCES:
+        p, o = physical.get(r, 0), tot.get(r, 0)
+        if p or o:
+            rows[r] = {"physical": p, "owned": o, "difference": p - o,
+                       "state": "SHORT" if o > p else ("EXCESS" if p > o else "OK")}
+    vo, vp = value_amounts({r: v["owned"] for r, v in rows.items()}, snapshot), value_amounts({r: v["physical"] for r, v in rows.items()}, snapshot)
+    usable = vo.usable_for_limits and vp.usable_for_limits and vo.total_cents is not None and vp.total_cents is not None
+    return {"resources": rows, "value_owned": vo.total_cents if usable else None, "value_physical": vp.total_cents if usable else None,
+            "net_cents": (vp.total_cents - vo.total_cents) if usable else None,
+            "missing_prices": sorted(set(vo.missing) | set(vp.missing))}
+
+
+def unexplained(conn, offshore_id: int | None, limit: int = 25) -> list[dict]:
+    """PnW records that touched the offshore bank AFTER shared mode was switched on and are not part of any alliance's share
+    yet. They are never assigned automatically: ECON investigates, then attributes them (or not)."""
+    if not offshore_id:
+        return []
+    since = L.get_state(conn, "offshore_shared_since") or ""
+    rows = conn.execute(
+        "SELECT p.id, p.direction, p.sender_id, p.sender_type, p.receiver_id, p.receiver_type, p.amounts_json, p.note, p.first_seen_at "
+        "FROM pnw_records p WHERE (p.sender_id=? OR p.receiver_id=?) AND p.first_seen_at >= ? "
+        "AND p.status NOT IN ('BASELINE','DISMISSED') "
+        "AND NOT EXISTS (SELECT 1 FROM offshore_entries e WHERE e.pnw_record_id = p.id) "
+        "AND NOT (p.sender_id=? AND p.receiver_id=?) ORDER BY p.id DESC LIMIT ?",
+        (offshore_id, offshore_id, since, offshore_id, offshore_id, limit)).fetchall()
+    out = []
+    for r in rows:
+        amounts = json.loads(r["amounts_json"])
+        if not any(v > 0 for v in amounts.values()):
+            continue
+        out.append(dict(r) | {"amounts": amounts, "inbound": r["receiver_id"] == offshore_id})
+    return out
 
 
 def assign(conn, *, alliance_id: int, amounts: dict, physical: dict, actor: str, note: str) -> None:
@@ -260,14 +355,14 @@ def host_share(conn, physical: dict | None = None) -> dict:
 
 
 # ------------------------------------------------------------------ views
-def summary(conn, physical: dict) -> dict:
+def summary(conn, physical: dict, snapshot=None, offshore_id: int | None = None) -> dict:
     tot = totals(conn)
-    owners = []
     bal = all_balances(conn)
-    for a in alliances(conn):
-        owners.append({"alliance_id": a["alliance_id"], "name": a["name"], "is_host": bool(a["is_host"]),
-                       "balances": bal.get(a["alliance_id"], {}), "held": held(conn, a["alliance_id"])})
-    return {"physical": physical, "owners": owners, "totals": tot, "unassigned": unassigned(physical, tot)}
+    owners = [{"alliance_id": a["alliance_id"], "name": a["name"], "is_host": bool(a["is_host"]),
+               "balances": bal.get(a["alliance_id"], {}), "held": held(conn, a["alliance_id"])} for a in alliances(conn)]
+    an = analysis(physical, tot, snapshot)
+    return {"physical": physical, "owners": owners, "totals": tot, "unassigned": unassigned(physical, tot),
+            "analysis": an, "unexplained": unexplained(conn, offshore_id)}
 
 
 def history(conn, alliance_id: int, limit: int = 15) -> list:

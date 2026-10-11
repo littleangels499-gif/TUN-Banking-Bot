@@ -3,7 +3,7 @@
 Accepted for every "nation" field:
   * a nation id           123456   #123456
   * a nation link         https://politicsandwar.com/nation/id=123456
-  * a nation name         "Kingdom of Foo"  (any capitalisation)
+  * a nation name         "Kingdom of Foo"  (any capitalisation; ANY nation in Politics & War, not only ours)
   * a Discord mention     @Alice  (picked from the Discord list)
   * a Discord username    alice   (only if that person linked their nation)
 
@@ -12,10 +12,14 @@ if it is unclear you get suggestions instead of a silent best guess.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 
 import discord
 from discord import app_commands
+
+from . import identity
+from .pnw import PnWRejected, PnWUncertain
 
 
 class ResolveError(Exception):
@@ -79,23 +83,52 @@ async def resolve(svc, text: str) -> int:
             roster = {}
     with svc.db.read() as conn:
         found = _exact(conn, roster, key)
-        if len(found) == 1:
-            return next(iter(found))
-        if len(found) > 1:
-            opts = ", ".join(f"{n or '?'} [#{i}]" for i, n in sorted(found.items())[:6])
-            raise ResolveError(f"More than one nation matches '{t}': {opts}. Please use the nation id.")
-        close = _similar(conn, roster, key)
-    msg = f"I couldn't find a nation called '{t}'."
-    if close:
-        msg += " Did you mean: " + ", ".join(f"**{n}** [#{i}]" for i, n in close) + "?"
+    for nid, nm in identity.exact(key).items():          # any nation we have ever seen, in any alliance
+        found.setdefault(nid, nm)
+    if len(found) == 1:
+        return next(iter(found))
+    if len(found) > 1:
+        raise ResolveError(f"More than one nation matches '{t}': " + ", ".join(identity.label(i, n) for i, n in sorted(found.items())[:6])
+                           + ". Please use the nation id.")
+
+    # Not known locally: ask Politics & War about EVERY nation, not only ours.
+    api_error, close = None, []
+    try:
+        rows = await identity.find_by_name(svc.pnw, t)
+    except (PnWRejected, PnWUncertain) as exc:
+        rows, api_error = [], str(exc)
+    exact = [r for r in rows if (r.get("nation_name") or "").lower() == key]
+    if len(exact) == 1:
+        return int(exact[0]["id"])
+    if len(exact) > 1:
+        opts = ", ".join(f"{identity.label(r['id'], r.get('nation_name'))}" + (f" · {r['alliance']['name']}" if (r.get('alliance') or {}).get('name') else "")
+                         for r in exact[:6])
+        raise ResolveError(f"More than one nation is called '{t}': {opts}. Please use the nation id so I don't pick the wrong one.")
+    close = [(int(r["id"]), r.get("nation_name") or "") for r in rows]
+    with svc.db.read() as conn:
+        local = _similar(conn, roster, key)
+    for nid, nm in list(local) + identity.suggest(key):
+        if all(nid != c[0] for c in close):
+            close.append((nid, nm))
+    if api_error:
+        msg = (f"I couldn't search Politics & War for '{t}' just now ({api_error}), and I don't know a nation with that name yet. "
+               "Try the nation id or link, or try again shortly.")
     else:
-        msg += " Try the nation id or link, or pick one from the suggestions as you type."
+        msg = f"I couldn't find any nation called '{t}' in Politics & War (I searched every nation, not only ours)."
+    if close:
+        msg += " Did you mean: " + ", ".join(f"**{n}** [#{i}]" for i, n in close[:5]) + "?"
+    else:
+        msg += " Check the spelling, or use the nation id or link."
     raise ResolveError(msg)
 
 
 def label(conn, nation_id: int) -> str:
-    r = conn.execute("SELECT nation_name FROM members WHERE nation_id=?", (nation_id,)).fetchone()
-    return f"{r['nation_name']} [#{nation_id}]" if r and r["nation_name"] else f"[#{nation_id}]"
+    """'Igala [#123456]' for any nation. Unknown -> 'Unknown Nation (ID: 123456)'."""
+    hint = None
+    if conn is not None and not identity.name(nation_id):
+        r = conn.execute("SELECT nation_name FROM members WHERE nation_id=?", (nation_id,)).fetchone()
+        hint = r["nation_name"] if r else None
+    return identity.label(nation_id, hint)
 
 
 # ------------------------------------------------------------ autocomplete
@@ -113,7 +146,16 @@ def make_autocomplete(svc):
         for nid, name in roster.items():
             if nid not in found and (not key or key in (name or "").lower() or key in str(nid)):
                 found[nid] = name or "Nation"
-        items = sorted(found.items(), key=lambda kv: kv[1].lower())[:25]
+        for nid, name in identity.suggest(key, 25):                      # every nation the bot has ever seen
+            found.setdefault(nid, name)
+        if len(found) < 5 and len(key) >= 3 and not key.isdigit():       # nobody known: ask PnW (fast, with a time limit)
+            try:
+                rows = await asyncio.wait_for(identity.find_by_name(svc.pnw, key), timeout=2.0)
+                for r in rows:
+                    found.setdefault(int(r["id"]), r.get("nation_name") or "Nation")
+            except (asyncio.TimeoutError, PnWRejected, PnWUncertain, Exception):  # noqa: BLE001 - suggestions are best-effort
+                pass
+        items = sorted(found.items(), key=lambda kv: (not kv[1].lower().startswith(key), kv[1].lower()))[:25]
         return [app_commands.Choice(name=f"{name} [#{nid}]"[:100], value=str(nid)) for nid, name in items]
 
     return nation_autocomplete

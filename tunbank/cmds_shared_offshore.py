@@ -96,7 +96,7 @@ def register(off_grp: app_commands.Group, svc: Services):
         except (PnWRejected, PnWUncertain) as exc:
             phys, err = None, str(exc)
         with svc.db.read() as conn:
-            summ = OL.summary(conn, phys or {})
+            summ = OL.summary(conn, phys or {}, None, svc.settings.offshore.alliance_id if svc.settings.offshore else None)
         backed = phys is not None and not any(v < 0 for v in summ["unassigned"].values())
         c = A.Card("🏝️ Shared offshore", "", A.GREEN if backed else A.ORANGE)
         if everything:
@@ -112,7 +112,17 @@ def register(off_grp: app_commands.Group, svc: Services):
             c.add("Unassigned (in the bank, owned by nobody yet)", bal_text(pos))
             if neg:
                 c.add("⚠️ Shares add up to MORE than the bank holds", bal_text(neg))
-            c.add("Reconciliation", "✅ RECONCILED: shares are fully backed" if backed else "⚠️ NOT fully backed. Run `/ledger reconcile`.")
+            an = summ["analysis"]
+            sh = [M.LABELS[r] for r, v in an["resources"].items() if v["state"] == "SHORT"]
+            ex = [M.LABELS[r] for r, v in an["resources"].items() if v["state"] == "EXCESS"]
+            c.add("Resource check", ("⚠️ Shares exceed the offshore: " + ", ".join(sh) if sh else "✓ no resource is over-owned")
+                  + (f"\n➕ Surplus in the bank (unassigned): {', '.join(ex)}" if ex else ""))
+            if an["net_cents"] is not None:
+                c.add("Overall market value", f"held {fmt.compact_money(an['value_physical'])} vs shares {fmt.compact_money(an['value_owned'])} → "
+                                              f"{fmt.compact_money(an['net_cents'])} {'✓' if an['net_cents'] >= 0 else '⚠️'}")
+            if summ["unexplained"]:
+                c.add(f"⚠️ {len(summ['unexplained'])} unexplained transaction(s)", "Records that can't be attributed to a registered alliance. See `/ledger reconcile`.")
+            c.add("Reconciliation", "✅ RECONCILED: shares are fully backed" if backed and not summ["unexplained"] else "⚠️ Needs attention. Run `/ledger reconcile`.")
         else:
             c.add("Is my share backed?", "✅ The offshore's real balance covers every registered share." if backed
                   else "⚠️ Not confirmed. Please contact TUN ECON.")
@@ -217,7 +227,7 @@ def register(off_grp: app_commands.Group, svc: Services):
         await reply(interaction, f"**{name} [#{aid}]** " + ("is registered in the shared offshore (share starts at nothing; use `/offshore assign` or "
                                                           "`/offshore reassign` to give it funds)." if action.value == "add" else "was deactivated."))
 
-    @off_grp.command(name="enable", description="Admin: switch the offshore to SHARED mode (everything in it starts as this alliance's share)")
+    @off_grp.command(name="enable", description="Admin: switch the offshore to SHARED mode (moves nothing, assigns nothing)")
     async def enable(interaction: discord.Interaction):
         if not await need(svc, interaction, "ADMIN"):
             return
@@ -229,12 +239,14 @@ def register(off_grp: app_commands.Group, svc: Services):
         with svc.db.read() as conn:
             if OL.shared_enabled(conn):
                 return await reply(interaction, "Shared mode is already on.")
-        c = A.Card("Switch the offshore to SHARED mode?", "Nothing moves in PnW. Everything the offshore holds right now is recorded as THIS "
-                   "alliance's share, so nothing changes for you today. Afterwards you register the other alliances and split it with `/offshore reassign`.",
-                   A.ORANGE)
+        c = A.Card("Switch the offshore to SHARED mode?", "Nothing moves in PnW and nothing is assigned. Every alliance starts at zero; the "
+                   "whole offshore shows as 'unassigned' until you record each alliance's real starting share.", A.ORANGE)
         c.add("Currently in the offshore", bal_text(phys))
-        c.add("From now on", "• this alliance can spend only its OWN share of the offshore\n• other alliances' deposits are credited to them\n"
-                              "• reconciliation compares the real balance with the sum of all shares (and never edits a share)")
+        c.add("Right after switching on", "• this alliance's share is ZERO, so it can't pay anything out of the offshore yet\n"
+                                          "• reconciliation will report the whole offshore as unassigned (a warning, not a lock)")
+        c.add("Next steps", "1. `/offshore registry action:Add alliance:<id>` for each other alliance\n"
+                            "2. `/offshore adjustownership` for EACH alliance (including this one) to record its real share\n"
+                            "3. `/ledger reconcile` to confirm the shares add up to the offshore")
         if not await confirm(svc, interaction, c):
             return await reply(interaction, "Cancelled. Nothing was changed.")
         host_id, host_name = svc.settings.alliance_id, f"Alliance {svc.settings.alliance_id}"
@@ -246,16 +258,81 @@ def register(off_grp: app_commands.Group, svc: Services):
 
         def do():
             with svc.db.tx() as conn:
-                res = OL.enable_shared(conn, physical=phys, actor=uid(interaction), host_alliance_id=host_id, host_name=host_name)
+                OL.enable_shared(conn, actor=uid(interaction), host_alliance_id=host_id, host_name=host_name)
+                if svc.settings.offshore is not None:
+                    L.set_state(conn, "offshore_bank_id", str(svc.settings.offshore.alliance_id))
                 from . import configaudit as CA
                 CA.record(conn, actor=uid(interaction), setting="offshore_shared", previous="off", new="on", target="offshore", category="CONFIG")
-                return res
         try:
             await asyncio.to_thread(do)
         except L.LedgerError as exc:
             return await reply(interaction, f"Not done: {exc}")
-        await reply(interaction, f"Shared mode is ON. {host_name} [#{host_id}] holds {bal_text(phys)} as its share. "
-                                 "Next: `/offshore registry action:Add alliance:<id>` for each other alliance, then `/offshore reassign`.")
+        await reply(interaction, f"Shared mode is ON. The offshore holds {bal_text(phys)}, all of it unassigned. "
+                                 "Now register the other alliances and record each alliance's share with `/offshore adjustownership`.")
+
+    @off_grp.command(name="adjustownership", description="Admin: record an alliance's real share of the offshore (moves nothing in PnW)")
+    @app_commands.describe(alliance="Alliance id or name", amounts="Its share, e.g. money=6b steel=5000 aluminum=10000",
+                           reason="Why / where the figures come from (kept permanently)",
+                           replace_all="Also set every resource NOT listed to zero (use this to start clean)")
+    async def adjustownership(interaction: discord.Interaction, alliance: str, amounts: str, reason: str, replace_all: bool = False):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+        await thinking(interaction)
+        with svc.db.read() as conn:
+            if not OL.shared_enabled(conn):
+                return await reply(interaction, NOT_ON)
+        a = find(alliance)
+        if not a:
+            return await reply(interaction, "I couldn't find exactly one registered alliance for that.")
+        try:
+            targets = parse(amounts)
+            phys = await physical()
+        except (L.LedgerError, PnWRejected, PnWUncertain) as exc:
+            return await reply(interaction, str(exc))
+        with svc.db.read() as conn:
+            pv = OL.preview_correction(conn, alliance_id=a["alliance_id"], targets=targets, replace_all=replace_all)
+        snap = await svc.prices.get()
+        an = OL.analysis(phys, pv["totals_after"], snap)
+        short = [r for r, v in an["resources"].items() if v["state"] == "SHORT"]
+        c = A.Card("Record this ownership?", "An ACCOUNTING correction only: no funds or resources move in PnW. After it, the combined shares are "
+                   "compared with what the offshore really holds and any difference is reported.", A.RED if short else A.ORANGE)
+        c.add("Alliance", f"{a['name']} [#{a['alliance_id']}]")
+        c.add("Its share · before", bal_text(pv["before"]), True)
+        c.add("Its share · after", bal_text(pv["after"]), True)
+        lines = [f"**{M.LABELS[r]}** · held {(fmt.compact_money if r == 'money' else fmt.compact_number)(v['physical'])} · all shares "
+                 f"{(fmt.compact_money if r == 'money' else fmt.compact_number)(v['owned'])} · "
+                 + {"SHORT": "⚠️ shares EXCEED the offshore", "EXCESS": "➕ unassigned surplus", "OK": "✓"}[v["state"]]
+                 for r, v in an["resources"].items()]
+        c.add("After this: all shares vs the real offshore", "\n".join(lines)[:1000] or "nothing")
+        if an["net_cents"] is not None:
+            c.add("Overall market value", f"held {fmt.compact_money(an['value_physical'])} vs shares {fmt.compact_money(an['value_owned'])} → "
+                                          f"{fmt.compact_money(an['net_cents'])} {'✓' if an['net_cents'] >= 0 else '⚠️'}")
+        c.add("Reason", reason[:300])
+        if short:
+            c.add("⚠️ Careful", "These figures make the shares add up to MORE than the offshore holds for the resources marked above. "
+                                "They will be recorded (you may be correcting an old mistake) and reconciliation will keep flagging it until it is fixed.")
+        if not await confirm(svc, interaction, c):
+            return await reply(interaction, "Cancelled. Nothing was changed.")
+
+        def do():
+            with svc.db.tx() as conn:
+                res = OL.correct_ownership(conn, alliance_id=a["alliance_id"], targets=targets, physical=phys, actor=uid(interaction),
+                                           reason=reason, replace_all=replace_all)
+                from . import configaudit as CA
+                CA.record(conn, actor=uid(interaction), setting="offshore_ownership", previous=bal_text(res["before"]), new=bal_text(res["after"]),
+                          target=f"{a['name']} [#{a['alliance_id']}] · {reason[:120]}", category="CONFIG", only_if_changed=False)
+                return res
+        try:
+            res = await asyncio.to_thread(do)
+        except L.LedgerError as exc:
+            return await reply(interaction, f"Not done: {exc}")
+        out = A.Card("🏝️ Offshore ownership recorded", f"{a['name']} by <@{uid(interaction)}>", A.GREEN, kind="OFFSHORE")
+        out.add("Before", bal_text(res["before"]), True)
+        out.add("After", bal_text(res["after"]), True)
+        out.add("Reason", reason[:300])
+        out.add("Next", "Do the same for the other alliances, then run `/ledger reconcile`.")
+        await reply(interaction, card=out)
+        await svc.alerts.econ(out)
 
     @off_grp.command(name="assign", description="Admin: give an alliance a share of funds that are in the offshore but owned by nobody yet")
     @app_commands.describe(alliance="Alliance id or name", amounts="e.g. money=500m steel=3000", note="Why / source of the funds")

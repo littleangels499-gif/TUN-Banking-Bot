@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import identity
 from . import exports as X
 from . import fmt
 from . import icons
@@ -149,6 +150,8 @@ def register(bank: app_commands.Group, svc: Services):
 
         def run():
             with svc.db.tx() as conn:
+                if svc.settings.offshore is not None:
+                    L.set_state(conn, "offshore_bank_id", str(svc.settings.offshore.alliance_id))
                 return R.run_checks(conn, holdings=live, snapshot_id=snap.id if snap else None,
                                     triggered_by=interaction_actor, per_bank=per_bank, snapshot=snap)
         result = await asyncio.to_thread(run)
@@ -184,7 +187,7 @@ def register(bank: app_commands.Group, svc: Services):
         if not m:
             return await reply(interaction, "That nation has no TUN Bank account.")
         card = A.Card("Confirm: RESERVE funds", "Moves AVAILABLE → LOCKED. Nothing is sent in Politics & War.", A.ORANGE)
-        card.add("Member", f"{m['nation_name'] or ''} [#{nation_id}]", True)
+        card.add("Member", identity.label(nation_id, m["nation_name"]), True)
         card.add("Lock type", lock_type.upper()[:40], True)
         card.add("Amount", fmt.amounts_with_value(parsed, val))
         card.add("Reason", reason)
@@ -229,7 +232,7 @@ def register(bank: app_commands.Group, svc: Services):
         to_release = parsed or free
         val = value_amounts(to_release, snap)
         card = A.Card("Confirm: RELEASE funds", "Moves LOCKED → AVAILABLE. Nothing is sent in Politics & War.", A.ORANGE)
-        card.add("Member", f"[#{lk['nation_id']}]", True)
+        card.add("Member", identity.label(lk["nation_id"], m["nation_name"] if m else None), True)
         card.add("Lock", f"#{lock_id} ({lk['lock_type']})", True)
         card.add("Amount", fmt.amounts_with_value(to_release, val))
         card.add("Reason", reason)
@@ -313,10 +316,11 @@ def register(bank: app_commands.Group, svc: Services):
                 await svc.alerts.econ(c)
                 return await reply(interaction, msg)
         card = A.Card("Confirm ECON withdrawal", "Nothing is sent until you press Confirm.", A.ORANGE)
-        label = {"ALLIANCE": "ALLIANCE-OWNED funds", "MEMBER_AVAILABLE": f"Member #{member_nation_id} AVAILABLE deposit",
-                 "MEMBER_LOCKED": f"Member #{member_nation_id} LOCKED funds (lock #{lock_id})"}[src]
+        await identity.ensure(svc.pnw, [destination_nation_id, member_nation_id])         # real names, not bare ids
+        label = {"ALLIANCE": "ALLIANCE-OWNED funds", "MEMBER_AVAILABLE": f"{identity.label(member_nation_id)} AVAILABLE deposit",
+                 "MEMBER_LOCKED": f"{identity.label(member_nation_id)} LOCKED funds (lock #{lock_id})"}[src]
         card.add("FUNDING SOURCE (deducted from)", f"**{label}**")
-        card.add("Destination nation", f"[#{destination_nation_id}]", True)
+        card.add("Destination nation", identity.label(destination_nation_id), True)
         card.add("Amount", fmt.amounts_with_value(parsed, val))
         card.add("Reason", reason)
         if approver:

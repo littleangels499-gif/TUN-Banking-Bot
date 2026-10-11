@@ -38,7 +38,7 @@ def panel_card() -> A.Card:
     c.add("💸 Withdraw to Me", "Take your available funds to your own nation.", True)
     c.add("📤 Send Funds", "Send some of your available funds to another nation.", True)
     c.add("📥 Deposit Funds", "Deposit from your nation straight from Discord.", True)
-    c.add("♻️ Deposit Excess", "Deposit everything above the alliance's holding limits.", True)
+    c.add("♻️ Deposit Excess", "Deposit everything above the per-city holding limits.", True)
     c.add("🏝️ Offshore Funds", "Move alliance funds from the main bank to the offshore bank.", True)
     c.add("🏦 My Account", "Your balance, locked funds and recent activity.", True)
     c.footer = "Every action asks you to confirm first · Nothing is credited until PnW shows the real transaction · TUN Bank"
@@ -198,29 +198,34 @@ def register(bankset: app_commands.Group, svc: Services):
         await asyncio.to_thread(save)
         await reply(interaction, f"The TUN Bank panel is posted in {getattr(target, 'mention', 'this channel')}.")
 
-    @bankset.command(name="excess", description="Admin: set (or view) the most a nation should keep; anything above is 'excess'")
-    @app_commands.describe(limits="e.g. money=50m food=250k coal=10k. Leave empty to view. Type 'none' to clear.")
+    @bankset.command(name="excess", description="ECON: set (or view) the most a nation should keep PER CITY; the rest is 'excess'")
+    @app_commands.describe(limits="Per city, e.g. money=5m food=10k steel=500. Empty = view. 'none' = clear.")
     async def excess(interaction: discord.Interaction, limits: str = ""):
         if not await need(svc, interaction, "MINISTER" if not limits.strip() else "ADMIN"):
             return
         await thinking(interaction)
         if not limits.strip():
             with svc.db.read() as conn:
-                cur = (cfg_get(conn, "excess_holdings") or "").strip()
+                cur = (cfg_get(conn, "excess_per_city") or "").strip()
             if not cur:
-                return await reply(interaction, "No excess-holdings limits are set yet. Use `/bankset excess limits:money=50m food=250k coal=10k`.")
-            parsed = M.parse_amounts(cur)
-            return await reply(interaction, "Members keep at most: " + fmt.amount_lines(parsed).replace("\n", " · ")
-                                            + "\nAnything above is offered for deposit by the **Deposit Excess** button.")
+                return await reply(interaction, "No per-city limits are set yet. Example: `/bankset excess limits:money=5m food=10k steel=500` "
+                                                "(a nation of 20 cities could then keep 200,000 food).")
+            per_city = M.parse_amounts(cur)
+            ex = "\n".join(f"{M.LABELS[r]}: {M.fmt_units(r, v)} per city → 5 cities {M.fmt_units(r, v * 5)} · 20 cities {M.fmt_units(r, v * 20)}"
+                            for r, v in per_city.items())
+            return await reply(interaction, "Most a nation should keep, **per city**:\n" + ex
+                               + "\nAnything above `amount × current city count` is offered for deposit by the **Deposit Excess** button.")
         text = "" if limits.strip().lower() in ("none", "clear", "off") else limits.strip()
         if text:
             try:
-                M.parse_amounts(text)
+                parsed = M.parse_amounts(text)
             except M.AmountError as exc:
                 return await reply(interaction, f"I couldn't read those limits: {exc}")
+            if not parsed:
+                return await reply(interaction, "Give at least one resource, e.g. `food=10k`.")
 
         def save():
             with svc.db.tx() as conn:
-                cfg_set(conn, "excess_holdings", text, str(interaction.user.id))
+                cfg_set(conn, "excess_per_city", text, str(interaction.user.id))
         await asyncio.to_thread(save)
-        await reply(interaction, "Excess-holdings limits saved." if text else "Excess-holdings limits cleared.")
+        await reply(interaction, "Per-city limits saved." if text else "Per-city limits cleared.")

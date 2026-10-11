@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import identity
 from . import charts as C
 from . import fmt
 from . import icons
@@ -20,7 +21,7 @@ from . import money as M
 from . import resolve as RS
 from .config import cfg_bool
 from .buttons import ActionView, open_form
-from .ui import Services, actor_label, confirm, nation_arg, post_outcomes, reply, role_ids, thinking
+from .ui import Services, actor_label, confirm, nation_arg, need, post_outcomes, reply, role_ids, thinking
 from .valuation import value_amounts
 from .pnw import PnWRejected, PnWUncertain
 
@@ -51,50 +52,134 @@ def loan_summary(conn, nation_id: int) -> str:
 
 def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services):
     # ------------------------------------------------------------ /nation link
-    @nation.command(name="link", description="Link and verify your Politics & War nation")
-    @app_commands.describe(nation="Your nation: id, link or name")
-    async def link(interaction: discord.Interaction, nation: str):
+    def write_link(discord_id, discord_name, nation_id, n, actor, how):
+        """The ONE place a nation gets linked. Never overwrites an existing link for either side. Returns an error text or None."""
+        with svc.db.tx() as conn:
+            row = conn.execute("SELECT nation_id, discord_id FROM members WHERE nation_id=?", (nation_id,)).fetchone()
+            other = L.member_by_discord(conn, discord_id)
+            if other and other["nation_id"] != nation_id:
+                return f"That Discord account is already linked to {identity.label(other['nation_id'])}. Ask ECON to unlink it first."
+            if row and row["discord_id"] and row["discord_id"] != str(discord_id):
+                return f"{identity.label(nation_id)} is already linked to a different Discord account. Contact ECON."
+            from . import configaudit as CA
+            CA.record(conn, actor=actor, setting="nation_link", previous="unlinked" if not row or not row["discord_id"] else f"<@{row['discord_id']}>",
+                      new=f"<@{discord_id}>", target=f"nation [#{nation_id}] · {how}", category="LINK", only_if_changed=False)
+            L.ensure_member(conn, nation_id, n.get("nation_name"))
+            conn.execute("UPDATE members SET discord_id=?, discord_name=?, linked_at=datetime('now') WHERE nation_id=?",
+                         (str(discord_id), discord_name, nation_id))
+            L.audit(conn, actor, "NATION_LINKED", f"nation:{nation_id}", {"how": how, "discord_id": str(discord_id)})
+        return None
+
+    # ------------------------------------------------------------ /nation link
+    @nation.command(name="link", description="Link your nation. Leave the box empty and I'll find it from your Discord username")
+    @app_commands.describe(nation="Your nation: id, link or name (optional)")
+    async def link(interaction: discord.Interaction, nation: str = ""):
         await thinking(interaction)
-        nation_id = await nation_arg(svc, interaction, nation)
-        if nation_id is None:
-            return
+        nation = str(nation or "")
+        names = {interaction.user.name.lower(), str(interaction.user).lower()}
+        if not nation.strip():
+            # Find it for them: the alliance nation whose PnW page shows THIS person's current Discord username.
+            try:
+                found = [d for d in await svc.pnw.fetch_alliance_discords() if d["discord"].lower() in names]
+            except (PnWRejected, PnWUncertain) as exc:
+                return await reply(interaction, f"I couldn't reach Politics & War right now ({exc}). Try again shortly, or give me your nation id.")
+            if not found:
+                return await reply(interaction,
+                                   "I couldn't find a nation in our alliance that shows your Discord username. In Politics & War open "
+                                   f"**Account → Settings**, set your Discord username to **{interaction.user.name}**, then run `/nation link` again "
+                                   "(or give me your nation id).")
+            if len(found) > 1:
+                return await reply(interaction, "More than one nation shows your Discord username, so I won't guess. Please give me your nation id "
+                                                "(`/nation link nation:<id>`), or ask ECON.")
+            nation_id = found[0]["id"]
+            card = A.Card("Is this your nation?", f"This nation shows your Discord username (**{interaction.user.name}**) on its Politics & War page.", A.BLUE)
+            card.add("Nation", identity.label(nation_id, found[0]["nation_name"]))
+            card.add("Only confirm if it is yours", "Linking decides who can withdraw this nation's deposit. ECON can see and audit every link.")
+            if not await confirm(svc, interaction, card):
+                return await reply(interaction, "Cancelled. Nothing was linked.")
+        else:
+            nation_id = await nation_arg(svc, interaction, nation)
+            if nation_id is None:
+                return
         try:
             n = await svc.pnw.fetch_nation(nation_id)
         except (PnWRejected, PnWUncertain) as exc:
             return await reply(interaction, f"I could not reach Politics & War right now ({exc}). Try again shortly.")
         if not n:
-            return await reply(interaction, f"Nation {nation_id} was not found.")
+            return await reply(interaction, f"There is no nation with id {nation_id} in Politics & War.")
         if int(n.get("alliance_id") or 0) != svc.settings.alliance_id:
             return await reply(interaction, "That nation is not in our alliance.")
-        names = {interaction.user.name.lower(), str(interaction.user).lower()}
         if (n.get("discord") or "").strip().lower() not in names:
-            return await reply(
-                interaction,
-                "I can't verify you own this nation. In Politics & War open **Account → Settings** and "
-                f"set your Discord username to **{interaction.user.name}**, then run this command again.")
-
-        def write():
-            with svc.db.tx() as conn:
-                row = conn.execute("SELECT nation_id, discord_id FROM members WHERE nation_id=?", (nation_id,)).fetchone()
-                other = L.member_by_discord(conn, interaction.user.id)
-                if other and other["nation_id"] != nation_id:
-                    return f"Your Discord account is already linked to nation {other['nation_id']}. Ask ECON to unlink it first."
-                if row and row["discord_id"] and row["discord_id"] != str(interaction.user.id):
-                    return "That nation is already linked to a different Discord account. Contact ECON."
-                from . import configaudit as CA
-                CA.record(conn, actor=interaction.user.id, setting="nation_link", previous="unlinked" if not row or not row["discord_id"] else f"<@{row['discord_id']}>",
-                          new=f"<@{interaction.user.id}>", target=f"nation [#{nation_id}] · self-service link, verified against PnW",
-                          category="LINK", only_if_changed=False)
-                L.ensure_member(conn, nation_id, n.get("nation_name"))
-                conn.execute("UPDATE members SET discord_id=?, discord_name=?, linked_at=datetime('now') WHERE nation_id=?",
-                             (str(interaction.user.id), interaction.user.name, nation_id))
-                L.audit(conn, interaction.user.id, "NATION_LINKED", f"nation:{nation_id}", {})
-            return None
-
-        err = write()
+            return await reply(interaction, "I can't verify you own this nation. In Politics & War open **Account → Settings** and "
+                                            f"set your Discord username to **{interaction.user.name}**, then run this command again.")
+        err = await asyncio.to_thread(write_link, interaction.user.id, interaction.user.name, nation_id, n, interaction.user.id,
+                                      "self-service link, verified against PnW")
         if err:
             return await reply(interaction, err)
         await reply(interaction, f"Linked! **{n.get('nation_name')}** [#{nation_id}] is now connected to your Discord account.")
+
+    # ------------------------------------------------------------ /nation autolink (staff, reviewed)
+    @nation.command(name="autolink", description="Admin: link every member whose PnW Discord username matches exactly one server member")
+    async def autolink(interaction: discord.Interaction):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+        await thinking(interaction)
+        if not svc.settings.members_intent:
+            return await reply(interaction,
+                               "I can't see the server's member list. To allow this: switch on **Server Members Intent** for the bot in the Discord "
+                               "developer portal (Bot → Privileged Gateway Intents), add `ENABLE_MEMBERS_INTENT=1` to `.env` / Railway Variables and restart. "
+                               "Until then members simply use `/nation link` (with no box filled in).")
+        guild = interaction.guild
+        if guild is None:
+            return await reply(interaction, "Run this inside the server.")
+        if not guild.chunked:
+            await guild.chunk()
+        try:
+            nations = await svc.pnw.fetch_alliance_discords()
+        except (PnWRejected, PnWUncertain) as exc:
+            return await reply(interaction, f"I couldn't read the alliance from Politics & War: {exc}")
+        with svc.db.read() as conn:
+            linked_nations = {r["nation_id"] for r in conn.execute("SELECT nation_id FROM members WHERE discord_id IS NOT NULL")}
+            linked_users = {r["discord_id"] for r in conn.execute("SELECT discord_id FROM members WHERE discord_id IS NOT NULL")}
+        by_user: dict = {}
+        for m in guild.members:
+            if m.bot:
+                continue
+            by_user.setdefault(m.name.lower(), []).append(m)
+        by_name: dict = {}
+        for d in nations:
+            if d["discord"]:
+                by_name.setdefault(d["discord"].lower(), []).append(d)
+        pairs, ambiguous, skipped = [], 0, 0
+        for uname, ds in by_name.items():
+            ms = by_user.get(uname, [])
+            if not ms:
+                continue
+            if len(ds) != 1 or len(ms) != 1:           # two nations claim the name, or two accounts share it: leave for a human
+                ambiguous += 1
+                continue
+            d, m = ds[0], ms[0]
+            if d["id"] in linked_nations or str(m.id) in linked_users:
+                skipped += 1                            # never touch an existing link
+                continue
+            pairs.append((d, m))
+        card = A.Card("Link these members?", "Each pair is a PnW nation that shows a Discord username, and exactly one server member with that "
+                      "exact username. Existing links are never changed.", A.ORANGE)
+        card.add("Will be linked", str(len(pairs)), True)
+        card.add("Left alone", f"{ambiguous} ambiguous · {skipped} already linked", True)
+        card.add("Matches", "\n".join(f"{identity.label(d['id'], d['nation_name'])} ↔ {m.mention} (@{m.name})" for d, m in pairs[:15])[:1000] or "none")
+        card.add("Please check", "A username on a PnW page is typed by the nation's owner and usernames can change hands, so look the list over "
+                                 "before confirming. Anyone unsure can still use `/nation link` themselves.")
+        if not pairs:
+            return await reply(interaction, card=card)
+        if not await confirm(svc, interaction, card):
+            return await reply(interaction, "Cancelled. Nothing was linked.")
+        done = 0
+        for d, m in pairs:
+            err = await asyncio.to_thread(write_link, m.id, m.name, d["id"], {"nation_name": d["nation_name"]}, interaction.user.id,
+                                          f"bulk username match confirmed by <@{interaction.user.id}>")
+            done += 0 if err else 1
+        await reply(interaction, f"Linked {done} member(s). Everyone else is unchanged.")
 
     # --------------------------------------------------------- /bank dashboard
     async def account_card(interaction, title):
@@ -269,7 +354,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         card = A.Card(f"{icons.status('deposit')} Confirm deposit from your nation",
                       "The bot will start this deposit FROM YOUR NATION into the TUN bank, using the API key you saved. "
                       "It cannot be undone.", A.ORANGE)
-        card.add("From", f"Your nation [#{nid}]", True)
+        card.add("From", f"Your nation: {identity.label(nid)}", True)
         card.add("To", "TUN main bank", True)
         card.add("Amount", fmt.amounts_with_value(parsed, val))
         card.add("Your key", f"saved key `{hint_}` · never shown or logged", True)
@@ -344,40 +429,46 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         await direct_deposit(interaction, m, parsed)
 
     async def act_excess(interaction):
-        """Deposit Excess: work out what the member's nation holds above ECON's configured limits and deposit it."""
+        """Deposit Excess: what the member's nation holds ABOVE ECON's per-city limits, deposited in one request.
+        Limit for a resource = configured amount per city x the nation's CURRENT city count (read live from PnW)."""
         await thinking(interaction)
         from .config import cfg_get
         m = _linked(svc, interaction)
         if not m:
             return await reply(interaction, NOT_LINKED)
         with svc.db.read() as conn:
-            limits_text = (cfg_get(conn, "excess_holdings") or "").strip()
+            limits_text = (cfg_get(conn, "excess_per_city") or "").strip()
+            old_flat = (cfg_get(conn, "excess_holdings") or "").strip()
         if not limits_text:
-            return await reply(interaction, "ECON hasn't set the excess-holdings limits yet, so there is nothing to compare against. "
-                                            "(Admins: `/bankset excess`.)")
+            return await reply(interaction, "ECON hasn't set the per-city holding limits yet, so there is nothing to compare against."
+                                            + (" (The older fixed limits are no longer used.)" if old_flat else "") + " Admins: `/bankset excess`.")
         try:
-            limits = M.parse_amounts(limits_text)
+            per_city = M.parse_amounts(limits_text)
         except M.AmountError:
-            return await reply(interaction, "The excess-holdings limits are set up incorrectly. Please tell ECON.")
+            return await reply(interaction, "The per-city limits are set up incorrectly. Please tell ECON.")
         if not can_direct(m):
             return await api_help(interaction)
         try:
-            held = await svc.deposits.holdings(nation_id=m["nation_id"], discord_id=interaction.user.id)
+            held, cities = await svc.deposits.holdings(nation_id=m["nation_id"], discord_id=interaction.user.id)
         except CR.CredentialError as exc:
             return await reply(interaction, str(exc))
         except (PnWRejected, PnWUncertain) as exc:
-            return await reply(interaction, f"I couldn't read your nation's holdings from Politics & War, so nothing was deposited: {exc}\n"
-                                            "Check that **Whitelisted access** is on for your API key.")
-        excess = {r: held.get(r, 0) - lim for r, lim in limits.items() if held.get(r, 0) > lim}
+            return await reply(interaction, f"I couldn't reliably read your nation's holdings and city count from Politics & War, so nothing "
+                                            f"was deposited: {exc}\nCheck that **Whitelisted access** is on for your API key, then try again.")
+        permitted = {r: lim * cities for r, lim in per_city.items()}                # configured amount x current city count
+        excess = {r: held.get(r, 0) - permitted[r] for r in permitted if held.get(r, 0) > permitted[r]}
         if not excess:
-            return await reply(interaction, f"{icons.status('ok')} **No excess found.** Everything in your nation is within ECON's limits.")
+            return await reply(interaction, f"{icons.status('ok')} **No excess found.** With {cities} cities, everything your nation holds is within "
+                                            "ECON's limits.")
         snap = await svc.prices.get()
         val = value_amounts(excess, snap)
         card = A.Card(f"{icons.status('deposit')} EXCESS FUNDS FOUND",
-                      "These are above ECON's limits for what a nation should keep. Press Confirm to deposit all of it.", A.ORANGE)
-        card.add("Excess", fmt.amounts_with_value(excess, val))
-        card.add("Your nation holds → limit", "\n".join(
-            f"{M.LABELS[r]}: {M.fmt_units(r, held.get(r, 0))} → {M.fmt_units(r, limits[r])}" for r in excess)[:1000])
+                      f"Your nation has **{cities} cities**. Limit = ECON's per-city amount × {cities}. Press Confirm to deposit everything above it, "
+                      "all together.", A.ORANGE)
+        rows = [f"**{M.LABELS[r]}**: holding {M.fmt_units(r, held.get(r, 0))} · permitted {M.fmt_units(r, permitted[r])} "
+                f"({M.fmt_units(r, per_city[r])}/city) · **excess {M.fmt_units(r, excess[r])}**" for r in excess]
+        card.add("Holdings vs limits", "\n".join(rows)[:1000])
+        card.add("Excess to deposit", fmt.amounts_with_value(excess, val))
         card.add("Crediting", "Your TUN balance changes only after PnW's real bank record appears. If PnW refuses, nothing changes.")
         if not await confirm(svc, interaction, card):
             return await reply(interaction, "Cancelled. Nothing was sent.")
@@ -473,7 +564,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
             if not cfg_bool(conn, "self_withdraw_enabled"):
                 return await reply(interaction, "Self-withdrawals are currently switched off by ECON.")
         nid = m["nation_id"]
-        dest_id, dest_label = (dest if dest else (nid, f"Your nation [#{nid}]"))
+        dest_id, dest_label = (dest if dest else (nid, f"Your nation: {identity.label(nid, m['nation_name'])}"))
         try:
             snap, val, _ = await svc.wd.prepare(funding_source="MEMBER_AVAILABLE", amounts=parsed)
         except (PnWRejected, PnWUncertain) as exc:
@@ -541,7 +632,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
             return await reply(interaction, f"I couldn't check that nation with Politics & War, so nothing was sent: {exc}")
         if not info:
             return await reply(interaction, f"There is no nation with id {rid} in Politics & War. Nothing was sent.")
-        label = f"{info.get('nation_name') or 'Nation'} [#{rid}]" + (f" · alliance #{info['alliance_id']}" if info.get("alliance_id") else " · no alliance")
+        label = identity.label(rid, info.get("nation_name")) + (f" · alliance #{info['alliance_id']}" if info.get("alliance_id") else " · no alliance")
         await do_withdraw(interaction, parsed, note or f"Sent via TUN Bank by nation #{m['nation_id']}", dest=(rid, label))
 
     async def submit_withdraw_form(interaction, amounts, note):

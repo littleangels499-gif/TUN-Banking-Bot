@@ -29,7 +29,10 @@ log = logging.getLogger("tunbank.bot")
 
 class TunBankBot(commands.Bot):
     def __init__(self, settings, db: Database):
-        super().__init__(command_prefix=commands.when_mentioned, intents=discord.Intents.default())
+        intents = discord.Intents.default()
+        if settings.members_intent:          # only when the owner switched it on in BOTH the portal and .env
+            intents.members = True
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents)
         self.settings = settings
         self.db = db
         pnw = PnWClient(settings)
@@ -44,6 +47,8 @@ class TunBankBot(commands.Bot):
         self.svc.deposits = MemberDepositService(db, pnw, prices, settings, self.svc.crypto, self.svc.scanner)
         from .trademon import TradeMonitor
         self.svc.trade_monitor = TradeMonitor(db, pnw, prices, self.svc.alerts)
+        from . import identity as _identity
+        _identity.init(db)                                            # names are available from the first second
         self._ready_once = False
 
     async def setup_hook(self):
@@ -147,9 +152,10 @@ class TunBankBot(commands.Bot):
         self.backup_loop.start()
         self.audit_loop.start()
         self.trade_loop.start()
+        self.identity_loop.start()
 
     async def close(self):
-        for t in (self.scan_loop, self.recon_loop, self.backup_loop, self.audit_loop, self.trade_loop):
+        for t in (self.scan_loop, self.recon_loop, self.backup_loop, self.audit_loop, self.trade_loop, self.identity_loop):
             t.cancel()
         await self.svc.pnw.close()
         self.db.close()
@@ -175,6 +181,15 @@ class TunBankBot(commands.Bot):
             await self.svc.alerts.flush_events()
         except Exception:  # noqa: BLE001
             log.exception("scan loop error")
+
+    @tasks.loop(seconds=180)
+    async def identity_loop(self):
+        """Fill in / refresh nation names (also for OLD records), a small batch at a time."""
+        try:
+            from . import identity as _identity
+            await _identity.refresh_some(self.db, self.pnw, 40)
+        except Exception:  # noqa: BLE001
+            log.exception("nation name refresh failed")
 
     @tasks.loop(seconds=30)
     async def trade_loop(self):
@@ -230,6 +245,7 @@ class TunBankBot(commands.Bot):
     @recon_loop.before_loop
     @backup_loop.before_loop
     @trade_loop.before_loop
+    @identity_loop.before_loop
     @audit_loop.before_loop
     async def _wait(self):
         await self.wait_until_ready()

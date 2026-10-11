@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import identity
 from . import configaudit as CA
 from . import credentials as CR
 from . import exports as X
@@ -64,7 +65,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 L.audit(conn, uid(interaction), "ACCOUNT_FROZEN", f"nation:{nation_id}", {"reason": reason})
                 return True
         ok = await asyncio.to_thread(do)
-        await reply(interaction, f"Account #{nation_id} frozen." if ok else "No such account.")
+        await reply(interaction, f"Account {identity.label(nation_id)} frozen." if ok else "No such account.")
 
     @bank.command(name="unfreeze", description="ECON: unfreeze a member's account")
     async def unfreeze(interaction: discord.Interaction, nation: str, reason: str):
@@ -82,7 +83,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 conn.execute("UPDATE members SET frozen=0, frozen_reason=NULL WHERE nation_id=?", (nation_id,))
                 L.audit(conn, uid(interaction), "ACCOUNT_UNFROZEN", f"nation:{nation_id}", {"reason": reason})
         await asyncio.to_thread(do)
-        await reply(interaction, f"Account #{nation_id} unfrozen.")
+        await reply(interaction, f"Account {identity.label(nation_id)} unfrozen.")
 
     # ------------------------------------------------- pause / resume withdrawals
     @bank.command(name="lock", description="ECON: PAUSE all withdrawals and conversions (deposits keep being recorded)")
@@ -165,7 +166,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 c = A.Card("Adjustment needs approval", "Adding funds, or taking a balance below zero, needs a SECOND staff member.",
                            A.ORANGE, kind="APPROVAL")
                 c.add("Request", f"#{approval_id} by {actor_label(interaction)}")
-                c.add("Nation", f"#{nation_id}", True)
+                c.add("Nation", identity.label(nation_id), True)
                 c.add("Change", fmt.amount_lines({r: abs(d) for r, d in deltas.items()}))
                 c.add("Reason", reason)
                 c.add("Evidence", evidence)
@@ -174,7 +175,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 return await reply(interaction, f"Approval request #{approval_id} posted. After a different Minister "
                                                 "approves it, run this same command again.")
         card = A.Card("Confirm ADJUSTMENT", "This corrects an accounting record. It is permanent and audited.", A.ORANGE)
-        card.add("Nation", f"#{nation_id}", True)
+        card.add("Nation", identity.label(nation_id), True)
         card.add("Change", "\n".join(f"{M.LABELS[r]}: {'+' if d > 0 else ''}{M.fmt_units(r, d)}" for r, d in deltas.items())
                  + "\n" + fmt.value_line(val))
         if debt:
@@ -468,14 +469,14 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         owner = nrow["discord_id"] if nrow and nrow["discord_id"] else None
         other_nation = mrow["nation_id"] if mrow and mrow["nation_id"] != nid else None
         if owner == str(member.id):
-            return await reply(interaction, f"{icons.status('ok')} {member.mention} is already linked to nation [#{nid}]. Nothing to change.")
+            return await reply(interaction, f"{icons.status('ok')} {member.mention} is already linked to {identity.label(nid)}. Nothing to change.")
         conflict = bool(owner or other_nation)
         if conflict:
             lines = []
             if owner:
-                lines.append(f"Nation [#{nid}] is already linked to <@{owner}>.")
+                lines.append(f"{identity.label(nid)} is already linked to <@{owner}>.")
             if other_nation:
-                lines.append(f"{member.mention} is already linked to nation [#{other_nation}].")
+                lines.append(f"{member.mention} is already linked to {identity.label(other_nation)}.")
             if not force or not await need_admin_quietly(interaction):
                 c = A.Card(f"{icons.status('warn')} Link conflict: nothing was changed", "\n".join(lines), A.ORANGE)
                 c.add("Why this matters", "A link decides who can withdraw a nation's deposit, so it is never changed silently.")
@@ -639,7 +640,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                            "The bot could not safely classify this on its own.", A.ORANGE)
                 c.add("Direction", r["direction"], True)
                 c.add("From nation" if r["direction"] == "IN" else "To nation",
-                      f"[#{r['sender_id'] if r['direction'] == 'IN' else r['receiver_id']}]", True)
+                      identity.label(r['sender_id'] if r['direction'] == 'IN' else r['receiver_id']), True)
                 c.add("Looks like", r["classification"].replace("_", " ").title(), True)
                 c.add("Contents", fmt.amounts_with_value(amounts, value_amounts(amounts, snap0)))
                 c.add("Note on the record", f"`{r['note'] or '—'}`")

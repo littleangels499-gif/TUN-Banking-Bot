@@ -275,6 +275,25 @@ def _route_shared_offshore(conn, n: dict, ctx: Ctx, ids: set):
         row = conn.execute("SELECT * FROM offshore_transfers WHERE id=?", (tag,)).fetchone() if tag else None
         if row and row["direction"] == "PAYOUT":
             return _process_offshore_payout(conn, n, ctx, row)
+        # (3) money leaving the offshore straight to ANOTHER registered alliance's own bank, started outside this bot
+        #     (e.g. through Locutus). The destination proves whose funds they are: that alliance's share goes down, never ours.
+        if not row and n["receiver_type"] == 2 and n["receiver_id"] not in ids:
+            reg = OL.registered(conn, n["receiver_id"])
+            if reg and not reg["is_host"]:
+                out = Outcome(n["id"], "OFFSHORE", "OTHER", None, dict(n["amounts"]))
+                B.insert_record(conn, n, direction="OUT", classification="OTHER", status="NO_CREDIT", snapshot_id=ctx.snapshot_id)
+                short = OL.debit_record(conn, n, alliance_id=reg["alliance_id"], actor="system:offshore")
+                L.audit(conn, "system", "OFFSHORE_EXTERNAL_PAYOUT", f"alliance:{reg['alliance_id']}",
+                        {"pnw_record_id": n["id"], "amounts": n["amounts"], "short": short})
+                out.note = (f"Payout from the shared offshore to {reg['name']}'s bank, made outside this bot: taken from THEIR share"
+                            + (f" (their recorded share did not cover everything, so part is unexplained)" if short else ""))
+                if short:
+                    L.raise_event(conn, "WARNING", "OFFSHORE_OWNERSHIP_SHORT", ref_type="pnw_record", ref_id=n["id"],
+                                  details={"message": f"PnW record #{n['id']} paid more out of the shared offshore to {reg['name']} than "
+                                                      "their recorded share covers. Their share was NOT changed for the missing part; "
+                                                      "check their starting balance (/offshore adjustownership).", "short": short},
+                                  dedupe_key=f"offshore-short:{n['id']}")
+                return out
     return None
 
 
