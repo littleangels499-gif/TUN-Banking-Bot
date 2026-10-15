@@ -15,6 +15,7 @@ import uuid
 from typing import Iterable
 
 from . import money as M
+from . import notify
 from .config import cfg_bool, cfg_int
 from .util import ISO_FMT, jdump, now_iso, parse_iso, sha256_text, utcnow
 
@@ -163,7 +164,8 @@ def integrity_state(conn) -> dict:
     if locked:
         state = "EMERGENCY_LOCK"
     elif "RECON" in sev or "CRITICAL" in sev:
-        state = "RECONCILIATION_REQUIRED"
+        # open findings exist; they only STOP banking while the reconciliation gate is on (or for non-gateable kinds)
+        state = "RECONCILIATION_REQUIRED" if blocking_events(conn) else "DISCREPANCY_NOT_BLOCKING"
     elif "WARNING" in sev:
         state = "WARNING"
     else:
@@ -174,13 +176,48 @@ def integrity_state(conn) -> dict:
         "emergency_reason": get_state(conn, "emergency_reason", ""),
         "bank_paused": get_state(conn, "bank_paused") == "1",
         "open_events": len(sev),
+        "gate_enabled": reconcile_gate_enabled(conn),
+        "blocking_events": len(blocking_events(conn)),
     }
+
+
+# Findings that describe a KNOWN deficit / debt / ownership shortfall (the books say the alliance is short, a member
+# is in debt, ...). With the reconciliation gate switched OFF these still get detected, reported and audited, but they
+# no longer stop unrelated banking. Everything else that is open (a broken hash chain, a balance that does not equal its
+# ledger, an uncertain/stuck PnW transfer, a changed PnW record...) is about tampering or a possible double-send and
+# ALWAYS blocks, whatever the gate says.
+GATE_KINDS = frozenset({
+    "RESOURCE_SHORTFALL", "NET_POSITION_SHORTFALL", "OFFSHORE_SHORTFALL", "OFFSHORE_NET_SHORTFALL",
+    "OFFSHORE_UNEXPLAINED", "OFFSHORE_OWNERSHIP_SHORT", "OFFSHORE_MISMATCH",
+})
+
+
+def reconcile_gate_enabled(conn) -> bool:
+    """True (the safe default) when open reconciliation findings may block money movement."""
+    from .config import cfg_bool
+
+    return cfg_bool(conn, "reconcile_gate_enabled")
+
+
+def blocking_events(conn, nation_id: int | None = None) -> list:
+    """Open RECON/CRITICAL findings that currently block money movement (honours the gate setting)."""
+    gate = reconcile_gate_enabled(conn)
+    out = []
+    for r in conn.execute("SELECT id, nation_id, kind FROM integrity_events WHERE status='OPEN' "
+                          "AND severity IN ('RECON','CRITICAL') ORDER BY id"):
+        if not gate and r["kind"] in GATE_KINDS:
+            continue                                   # monitored + reported, but not blocking
+        if nation_id is None or r["nation_id"] is None or r["nation_id"] == nation_id:
+            out.append(r)
+    return out
 
 
 def assert_can_mutate(conn, nation_id: int | None, op: str) -> None:
     """Raise FinancialBlocked if this kind of money movement must not happen now.
 
     op is one of: withdraw, convert, lock, release, adjust, import.
+    The emergency lock and the ECON pause always apply. Open reconciliation findings block only while the
+    reconciliation gate is ON, and then only the findings listed in GATE_KINDS can be switched off (see above).
     """
     st = integrity_state(conn)
     if st["emergency_lock"]:
@@ -192,16 +229,20 @@ def assert_can_mutate(conn, nation_id: int | None, op: str) -> None:
         raise FinancialBlocked("Withdrawals and conversions are paused by ECON (/bank unlock to resume)." if op == "convert"
                                else "Withdrawals are paused by ECON (/bank unlock to resume).")
     if op in ("withdraw", "convert", "lock", "import"):
-        rows = conn.execute(
-            "SELECT id, nation_id, kind FROM integrity_events WHERE status='OPEN' "
-            "AND severity IN ('RECON','CRITICAL')"
-        ).fetchall()
-        for r in rows:
-            if r["nation_id"] is None or (nation_id is not None and r["nation_id"] == nation_id):
-                raise FinancialBlocked(
-                    f"RECONCILIATION REQUIRED: integrity event #{r['id']} ({r['kind']}) "
-                    "is open and must be reviewed by ECON before this can proceed."
-                )
+        for r in blocking_events(conn, nation_id):
+            raise FinancialBlocked(
+                f"RECONCILIATION REQUIRED: integrity event #{r['id']} ({r['kind']}) "
+                "is open and must be reviewed by ECON before this can proceed."
+            )
+
+
+# What to SHOW as the type of a ledger entry. External withdrawals and funded credits are stored as ordinary guarded
+# ADJUSTMENT entries (the ledger rules never change), but every place that displays or exports entries uses this label so
+# they can never be mistaken for a manual adjustment. Use as:  SELECT ..., {LABELED_TYPE_SQL} AS entry_type FROM ledger_entries
+LABELED_TYPE_SQL = (
+    "CASE WHEN EXISTS (SELECT 1 FROM external_withdrawals w WHERE w.group_id = ledger_entries.group_id) THEN 'EXTERNAL_WITHDRAWAL' "
+    "WHEN EXISTS (SELECT 1 FROM balance_transfers t WHERE t.group_id = ledger_entries.group_id) THEN 'FUNDED_CREDIT' "
+    "ELSE ledger_entries.entry_type END")
 
 
 # --------------------------------------------------------------- members
@@ -553,6 +594,7 @@ def complete_withdrawal(conn, tx_id: int) -> dict:
     if tx["funding_source"] != "ALLIANCE":
         bucket = "AVAILABLE" if tx["funding_source"] == "MEMBER_AVAILABLE" else "LOCKED"
         g = new_group("WD")
+        bal_before = get_balances(conn, tx["member_nation_id"], bucket)
         post_entries(conn, [
             dict(group_id=g, nation_id=tx["member_nation_id"], bucket=bucket, resource=res,
                  delta=-amt, entry_type="WITHDRAWAL", pnw_record_id=tx["pnw_record_id"],
@@ -560,6 +602,14 @@ def complete_withdrawal(conn, tx_id: int) -> dict:
                  note=tx["note"], price_snapshot_id=tx["price_snapshot_id"])
             for res, amt in items.items()
         ])
+        notify.enqueue(
+            conn, dedupe_key=f"wd:{tx_id}", nation_id=tx["member_nation_id"], kind="WITHDRAWAL", title="Withdrawal completed",
+            deltas={res: -amt for res, amt in items.items()}, before=bal_before,
+            after=get_balances(conn, tx["member_nation_id"], bucket),
+            reason=tx["reason"] or "", reference=f"TUN-TX{tx_id} · PnW record #{tx['pnw_record_id']}",
+            source=("Your available balance" if bucket == "AVAILABLE" else "Your locked funds")
+                   + (" (sent by ECON staff)" if tx["tx_type"] == "WITHDRAW_ECON" else " (your own withdrawal)"),
+            origin="Through TUN Bank", bucket=bucket.lower())
     now = now_iso()
     conn.execute("UPDATE transactions SET status='COMPLETED', completed_at=?, updated_at=? WHERE id=?",
                  (now, now, tx_id))
@@ -662,10 +712,11 @@ def adjustment_debt(conn, nation_id: int, deltas: dict) -> dict:
         if d >= 0:
             continue
         after = bal.get(res, 0) + d
-        if after < 0 and (bal.get(res, 0) - held.get(res, 0)) < -d:
-            if held.get(res, 0):
-                raise InsufficientFunds(f"A pending withdrawal is holding {M.LABELS[res]}; wait for it to finish "
-                                        "before taking this balance below zero.")
+        if held.get(res, 0) and after < held[res]:
+            # never take funds a pending withdrawal has already reserved (even if the balance would stay above zero)
+            raise InsufficientFunds(f"A pending withdrawal is holding {M.LABELS[res]}; wait for it to finish "
+                                    "before taking this balance down that far.")
+        if after < 0:
             out[res] = after
     return out
 
@@ -723,7 +774,12 @@ def apply_adjustment(conn, *, nation_id: int, deltas: dict, reason: str, evidenc
     audit(conn, actor, "ADJUSTMENT_APPLIED", f"adjustment:{adj_id}", {
         "nation_id": nation_id, "deltas": deltas, "reason": reason, "evidence": evidence,
         "approval_id": approval_id})
-    return {"adjustment_id": adj_id, "before": before, "after": snapshot_accounts(conn, nation_id)}
+    after = snapshot_accounts(conn, nation_id)
+    notify.enqueue(conn, dedupe_key=f"adj:{adj_id}", nation_id=nation_id, kind="ADJUSTMENT", title="Balance adjustment",
+                   deltas=deltas, before=before["available"], after=after["available"], reason=reason,
+                   reference=f"Adjustment #{adj_id} · evidence: {evidence}", source="Staff correction of your balance",
+                   origin="Through TUN Bank")
+    return {"adjustment_id": adj_id, "before": before, "after": after}
 
 
 def find_or_request_approval(conn, kind: str, requester: str, payload: dict, reason: str):

@@ -172,6 +172,26 @@ def batch_fingerprint(rows) -> str:
     return sha256_text(jdump(sorted([[r["nation_id"], r["resource"], r["amount"]] for r in rows])))
 
 
+def check_transfers(conn):
+    """Funded balance transfers: both sides of every journal must balance and match the ledger."""
+    from . import transfers as T
+
+    from . import external as EX
+
+    out = []
+    bad = T.verify(conn)
+    if bad:
+        out.append(_f("CRITICAL", "TRANSFER_JOURNAL_BROKEN",
+                      f"{len(bad)} balance transfer(s) do not balance or do not match the ledger (first: #{bad[0]['transfer_id']}: {bad[0]['problem']}).",
+                      details={"transfers": bad[:20]}))
+    bad = EX.verify(conn)
+    if bad:
+        out.append(_f("CRITICAL", "EXTERNAL_WITHDRAWAL_JOURNAL_BROKEN",
+                      f"{len(bad)} external withdrawal(s) do not match their ledger entries (first: #{bad[0]['journal_id']}).",
+                      details={"journal": bad[:20]}))
+    return out
+
+
 def check_opening(conn):
     out = []
     for b in conn.execute("SELECT * FROM import_batches"):
@@ -417,7 +437,7 @@ def run_checks(conn, *, holdings: dict | None, snapshot_id: int | None, triggere
     """Run every check, record findings as integrity events, store the run."""
     started = now_iso()
     findings = []
-    for fn in (check_chains, check_balances, check_justification, check_opening,
+    for fn in (check_chains, check_balances, check_justification, check_opening, check_transfers,
                check_stuck, check_freshness, check_mass_changes, check_previous_head):
         findings += fn(conn)
     if snapshot is None:

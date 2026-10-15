@@ -104,6 +104,7 @@ class MemberDepositService:
         try:
             dep_id, created = await asyncio.to_thread(create)
         except L.LedgerError as exc:
+            log.warning("member deposit not started: nation=%s blocked by the bank itself (not PnW): %s", nation_id, exc)
             return {"status": "BLOCKED", "message": str(exc), "deposit_id": None, "outcomes": []}
         if not created:
             row = await asyncio.to_thread(self._row, dep_id)
@@ -129,6 +130,7 @@ class MemberDepositService:
         if got is None:
             return {"status": "UNCERTAIN", "message": "This deposit is already being processed.", "deposit_id": dep_id, "outcomes": []}
         if got[0] == "ERR":
+            log.warning("member deposit %s not sent: no usable stored API key for nation %s (%s)", dep_id, nation_id, got[1])
             return {"status": "FAILED", "message": got[1], "deposit_id": dep_id, "outcomes": []}
         key = got[1]
         note = f"TUN-DEP{dep_id}"
@@ -136,6 +138,7 @@ class MemberDepositService:
             rec = await self.pnw.bank_deposit(amounts, note, key, self.s.deposit_bot_key)
         except PnWRejected as exc:
             msg = CR.redact(exc)
+            log.warning("member deposit %s refused by PnW for nation %s: %s", dep_id, nation_id, msg)
             await asyncio.to_thread(self._finish, dep_id, "FAILED", msg)
             extra = (" " + HELP_WHITELIST) if any(w in msg.lower() for w in ("whitelist", "bot", "key", "permission", "authoriz", "access")) else ""
             return {"status": "FAILED", "message": f"PnW refused the deposit, nothing was sent: {msg}.{extra}", "deposit_id": dep_id, "outcomes": []}

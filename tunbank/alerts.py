@@ -114,6 +114,24 @@ def classified_card(o, name=None) -> Card:
     return c
 
 
+def external_withdrawal_card(o, name=None) -> Card:
+    neg = any((o.after or {}).get(r, 0) < 0 for r in o.amounts)
+    c = Card(f"{icons.status('warn')} External withdrawal deducted", "Money left the offshore for this member outside TUN Bank, "
+             "so their recorded balance was reduced by the same amount.", ORANGE if neg else BLUE, kind="EXTERNAL_WITHDRAWAL",
+             nation_id=o.nation_id)
+    c.add("Nation", _who(o.nation_id, name), True)
+    c.add("PnW record", f"#{o.record_id}", True)
+    c.add("Amounts", _money_block(o.amounts, getattr(o, "valuation", None)))
+    if o.before is not None and o.after is not None:
+        c.add("Balance (before → after)", "\n".join(
+            f"{M.LABELS[r]}: {M.fmt_units(r, o.before.get(r, 0))} → **{M.fmt_units(r, o.after.get(r, 0))}**"
+            + ("  🔻 NEGATIVE" if o.after.get(r, 0) < 0 else "") for r in sorted(o.amounts)))
+    if neg:
+        c.add("Needs attention", "The balance is now negative: a real debt. Decide how it is settled.")
+    c.add("Undo?", "History is never edited. If this was wrong, ECON corrects it with a documented `/bank credit`.")
+    return c
+
+
 def withdrawal_card(r, *, actor_label: str, dest_nation_id: int, source_label: str, amounts: dict,
                     note: str) -> Card:
     ok = r.status == "COMPLETED"
@@ -190,6 +208,50 @@ def lock_state_card(on: bool, reason: str, actor: str) -> Card:
 
 
 # ---------------------------------------------------------------- delivery
+def member_event_card(payload: dict) -> Card:
+    """The DM a member gets after a withdrawal, adjustment, credit or external withdrawal was successfully recorded."""
+    import datetime as dt
+
+    from .util import parse_iso
+
+    deltas = payload.get("deltas") or {}
+    gain = sum(1 for d in deltas.values() if d > 0)
+    loss = sum(1 for d in deltas.values() if d < 0)
+    external = "extern" in (payload.get("origin") or "").lower()
+    color = ORANGE if external else (GREEN if gain and not loss else BLUE)
+    c = Card(f"{'⚠️ ' if external else ''}{payload.get('title') or 'Account update'}",
+             f"Nation **{payload.get('nation_name') or 'unknown'}** [#{payload.get('nation_id')}]", color,
+             kind="MEMBER_DM", nation_id=payload.get("nation_id"))
+    try:
+        epoch = int(parse_iso(payload["ts"]).replace(tzinfo=dt.timezone.utc).timestamp())
+        c.add("When", f"<t:{epoch}:F>", True)
+    except Exception:  # noqa: BLE001
+        pass
+    c.add("How it happened", payload.get("origin") or "-", True)
+    lines = []
+    for r in sorted(deltas):
+        d = deltas[r]
+        lines.append(f"{icons.resource(r)} {M.LABELS[r]}: **{'+' if d > 0 else '−'}{M.fmt_units(r, abs(d))}**")
+    c.add("Resources", "\n".join(lines) or "-")
+    before, after = payload.get("before"), payload.get("after")
+    if before is not None and after is not None:
+        bal = []
+        for r in sorted(deltas):
+            nb, na = after.get(r, 0), before.get(r, 0)
+            bal.append(f"{M.LABELS[r]}: {M.fmt_units(r, na)} → **{M.fmt_units(r, nb)}**" + ("  🔻 negative balance" if nb < 0 else ""))
+        c.add(f"Your {payload.get('bucket', 'available')} balance (before → after)", "\n".join(bal))
+    if payload.get("source"):
+        c.add("Source", payload["source"], True)
+    if payload.get("reference"):
+        c.add("Reference", payload["reference"], True)
+    if payload.get("reason"):
+        c.add("Reason", payload["reason"])
+    if external:
+        c.add("Not you?", "If you did not expect this, contact ECON staff right away and quote the reference above.")
+    c.footer = "TUN Bank · automatic notification"
+    return c
+
+
 class AlertService:
     """Sends cards to the ECON log channel and DMs; logs every attempt."""
 
@@ -319,6 +381,39 @@ class AlertService:
             self._log(card, f"dm:{discord_id}", True)
         except Exception as exc:  # noqa: BLE001
             self._log(card, f"dm:{discord_id}", False, str(exc)[:200])
+
+    async def flush_notifications(self, limit: int = 25):
+        """Deliver queued member DMs. A failure is recorded for staff and NEVER touches the transaction it describes."""
+        import asyncio
+
+        from . import notify
+
+        if not self.bot:
+            return                                   # nothing can be delivered yet; rows stay queued
+        lock = getattr(self, "_flush_lock", None)
+        if lock is None:
+            lock = self._flush_lock = asyncio.Lock()
+        async with lock:
+            with self.db.read() as conn:
+                rows = [dict(r) for r in notify.pending(conn, limit)]
+                enabled = cfg_bool(conn, "dm_members")
+            for r in rows:
+                status, err = "SENT", None
+                if not enabled:
+                    status, err = "SKIPPED", "member DMs are switched off (dm_members)"
+                else:
+                    try:
+                        card = member_event_card(json.loads(r["payload_json"]))
+                        user = self.bot.get_user(int(r["discord_id"])) or await self.bot.fetch_user(int(r["discord_id"]))
+                        await user.send(embed=to_embed(card))
+                    except Exception as exc:  # noqa: BLE001
+                        status, err = "FAILED", f"{type(exc).__name__}: {exc}"
+                        log.warning("member DM %s (nation %s) not delivered: %s", r["id"], r["nation_id"], err)
+                try:
+                    with self.db.tx() as conn:
+                        notify.mark(conn, r["id"], status, err)
+                except Exception:  # noqa: BLE001
+                    log.exception("could not record notification result %s", r["id"])
 
     def discord_id_for(self, nation_id):
         with self.db.read() as conn:

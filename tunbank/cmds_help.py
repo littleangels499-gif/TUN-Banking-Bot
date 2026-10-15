@@ -42,7 +42,7 @@ CATALOG = {
     # banking
     "bank holdings": ("banking", "FLAG:bank_view_alliance_holdings"), "bank records": ("banking", "AUDITOR"),
     "bank sync": ("banking", "BANKER"), "bank withdraw": ("banking", "BANKER"),
-    "bank reserve": ("banking", "MINISTER"), "bank release": ("banking", "MINISTER"), "bank adjust": ("banking", "MINISTER"),
+    "bank reserve": ("banking", "MINISTER"), "bank release": ("banking", "MINISTER"), "bank adjust": ("banking", "MINISTER"), "bank credit": ("banking", "MINISTER"),
     "bank freeze": ("banking", "MINISTER"), "bank unfreeze": ("banking", "MINISTER"), "bank lock": ("banking", "MINISTER"),
     "bank unlock": ("banking", "MINISTER"), "bank review": ("banking", "MINISTER"), "bank resolvetx": ("banking", "MINISTER"),
     "bank offshore": ("banking", "BANKER"), "bank linknation": ("banking", "MINISTER"),
@@ -71,7 +71,7 @@ CATALOG = {
     "bank revoke": ("audit", "MINISTER"), "audit transactions": ("audit", "AUDITOR"), "audit stafflog": ("audit", "AUDITOR"),
     "audit nation": ("audit", "AUDITOR"), "audit configlog": ("audit", "ADMIN"), "ledger reconcile": ("audit", "AUDITOR"),
     "ledger dashboard": ("audit", "AUDITOR"), "ledger emergencylock": ("audit", "MINISTER"), "ledger resolve": ("audit", "ADMIN"),
-    "bankset conversionpanel": ("config", "ADMIN"), "bankset panel": ("config", "ADMIN"), "bankset excess": ("config", "MINISTER"), "deposit reset": ("config", "ADMIN"),
+    "bankset conversionpanel": ("config", "ADMIN"), "bankset gate": ("config", "ADMIN"), "bankset resetconfig": ("config", "ADMIN"), "bankset iconpack": ("config", "ADMIN"), "bankset panel": ("config", "ADMIN"), "bankset excess": ("config", "MINISTER"), "deposit reset": ("config", "ADMIN"),
     # charts (staff)
     "chart nation": ("charts", "AUDITOR"), "chart vault": ("charts", "FLAG:bank_view_alliance_holdings"), "chart members": ("charts", "FLAG:bank_view_alliance_holdings"),
     "chart deposits": ("charts", "AUDITOR"), "chart tax": ("charts", "FLAG:bank_view_tax"),

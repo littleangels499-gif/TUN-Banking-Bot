@@ -386,7 +386,7 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
             acc = L.snapshot_accounts(conn, nation_id)
             sums = conn.execute("SELECT bucket, resource, SUM(delta) s FROM ledger_entries WHERE nation_id=? GROUP BY bucket, resource",
                                 (nation_id,)).fetchall()
-            recent = conn.execute("SELECT ts, entry_type, bucket, resource, delta, pnw_record_id, tx_id, actor FROM ledger_entries "
+            recent = conn.execute(f"SELECT ts, {L.LABELED_TYPE_SQL} AS entry_type, bucket, resource, delta, pnw_record_id, tx_id, actor FROM ledger_entries "
                                   "WHERE nation_id=? ORDER BY id DESC LIMIT 10", (nation_id,)).fetchall()
         if not m:
             return await reply(interaction, "No account for that nation.")
@@ -475,6 +475,8 @@ def register_audit(audit: app_commands.Group, ledger_grp: app_commands.Group, sv
         c = A.Card("Ledger integrity", "", A.GREEN if st["state"] == "NORMAL" else (A.RED if st["emergency_lock"] else A.ORANGE))
         c.add("State", st["state"], True)
         c.add("Withdrawals", "PAUSED" if st["bank_paused"] else "enabled", True)
+        c.add("Reconciliation gate", "ON · deficits block banking" if st["gate_enabled"] else "OFF · deficits reported, banking continues", True)
+        c.add("Currently blocking", str(st["blocking_events"]), True)
         c.add("Ledger chain", f"intact ({chain['count']} entries)" if chain["ok"] else f"BROKEN at #{chain.get('bad_id')}", True)
         c.add("Audit chain", f"intact ({achain['count']} entries)" if achain["ok"] else f"BROKEN at #{achain.get('bad_id')}", True)
         c.add("Last PnW sync", last_ok or "never", True)

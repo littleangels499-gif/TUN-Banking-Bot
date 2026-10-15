@@ -70,12 +70,18 @@ def build(conn, kind: str, snapshot, period: str = "all") -> tuple[bytes, str]:
         _sheet(wb, "Valuation info", ["Item", "Value"], note)
     elif kind == "ledger":
         rows = [[r["id"], r["ts"], _N(r["nation_id"]), r["bucket"], r["resource"], _num(r["delta"]),
-                 r["entry_type"], r["pnw_record_id"], r["tx_id"], r["lock_id"], r["batch_id"],
-                 r["adjustment_id"], r["actor"], r["note"], r["group_id"], r["price_snapshot_id"]]
-                for r in conn.execute("SELECT * FROM ledger_entries ORDER BY id")]
+                 r["shown_type"], r["pnw_record_id"], r["tx_id"], r["lock_id"], r["batch_id"],
+                 r["adjustment_id"], r["actor"], r["note"], r["group_id"], r["price_snapshot_id"], r["entry_type"]]
+                for r in conn.execute(f"SELECT ledger_entries.*, {L.LABELED_TYPE_SQL} AS shown_type FROM ledger_entries ORDER BY id")]
         _sheet(wb, "Ledger", ["ID", "Time", "Nation", "Bucket", "Resource", "Change", "Type", "PnW record",
                               "Tx", "Lock", "Import batch", "Adjustment", "Actor", "Note", "Group",
-                              "Price snapshot"], rows)
+                              "Price snapshot", "Stored entry type"], rows)
+        ext = [[r["id"], r["created_at"], _N(r["nation_id"]), r["pnw_record_id"], r["source_label"], r["amounts_json"],
+                r["before_json"], r["after_json"], r["negative_json"], r["decision"], r["decided_by"], r["note"], r["group_id"]]
+               for r in conn.execute("SELECT * FROM external_withdrawals ORDER BY id")]
+        _sheet(wb, "External withdrawals", ["ID", "Recorded", "Nation", "PnW record", "Source bank", "Amounts (units/100)",
+                                            "Balance before", "Balance after", "Went negative", "Decision", "Decided by", "Reason",
+                                            "Ledger group"], ext)
     elif kind == "deposits":
         rows = [[r["id"], r["record_date"], r["sender_id"], r["classification"], r["status"],
                  _N(r["credited_nation_id"]), r["note"], r["amounts_json"], r["price_snapshot_id"]]

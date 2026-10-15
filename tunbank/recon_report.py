@@ -11,6 +11,8 @@ STATUS = {
     "WARNING": ("🟡", "WARNING", "A resource-level discrepancy, but no integrity problem. Banking continues.", A.ORANGE),
     "RECONCILIATION_REQUIRED": ("🟠", "RECONCILIATION REQUIRED",
                                 "An unexplained discrepancy that needs ECON investigation.", A.ORANGE),
+    "DISCREPANCY_NOT_BLOCKING": ("🟠", "DISCREPANCY · NOT BLOCKING",
+                                 "Known deficits are open, but the reconciliation gate is OFF so banking continues.", A.ORANGE),
     "EMERGENCY_LOCK": ("🔴", "EMERGENCY LOCK", "A serious integrity problem. Financial changes are halted.", A.RED),
 }
 SEV_ICON = {"CRITICAL": "🔴", "RECON": "🟠", "WARNING": "🟡"}
@@ -48,6 +50,12 @@ def what_to_do(status: str, short: list[str], lock_reason: str = "") -> str:
                 + ("To clear the warning for " + ", ".join(short) + ": check `/bank review` for deposits not yet credited, "
                    "move the resource into the bank, or correct members' balances with `/bank adjust` if they are wrong."
                    if short else "Review the findings above."))
+    if status == "DISCREPANCY_NOT_BLOCKING":
+        return ("**Banking is NOT blocked** (the reconciliation gate is off: `/bankset gate`). The findings above stay open and are "
+                "still reported and audited. Deal with them when you can:\n"
+                "1. `/bank review` – unprocessed PnW records.\n"
+                "2. Decide whether the shortage is a real debt/deficit to carry, or something to fix with the bank or an adjustment.\n"
+                "Nothing is changed automatically to make the numbers match.")
     if status == "RECONCILIATION_REQUIRED":
         return ("**Withdrawals, conversions and imports are paused until this is cleared.**\n"
                 "1. `/bank review` – deal with any unprocessed PnW records.\n"

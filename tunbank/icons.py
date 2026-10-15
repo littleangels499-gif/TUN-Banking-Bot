@@ -65,3 +65,33 @@ def plain(res: str) -> str:
     """Icon text for charts/files (custom emoji can't be drawn there)."""
     icon = resource(res)
     return "" if icon.startswith("<") else icon
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# The PnW icon pack: custom emojis uploaded to the bot's APPLICATION (scripts/install_pnw_icons.py), named pnw_<resource>.
+# Application emojis work in every server and in DMs. If an icon is missing or gets deleted, the Unicode default is used.
+# --------------------------------------------------------------------------------------------------------------------
+PACK_PREFIX = "pnw_"
+
+
+def pack_from(emojis) -> dict:
+    """{resource: '<:pnw_money:123>'} for every pack emoji found among `emojis` (objects with .name and .id)."""
+    found = {}
+    for e in emojis:
+        name = (getattr(e, "name", "") or "").lower()
+        if name.startswith(PACK_PREFIX) and name[len(PACK_PREFIX):] in DEFAULT_RESOURCE_ICONS:
+            found[name[len(PACK_PREFIX):]] = f"<{'a' if getattr(e, 'animated', False) else ''}:{e.name}:{e.id}>"
+    return found
+
+
+def stale_pack_icons(configured: dict, emojis) -> list:
+    """Resources whose configured pack emoji no longer exists (it was deleted): they should fall back to the default."""
+    live = {str(e.id) for e in emojis}
+    out = []
+    for res, value in configured.items():
+        v = (value or "").strip()
+        if v.startswith("<") and f":{PACK_PREFIX}" in v:
+            emoji_id = v.rstrip(">").split(":")[-1]
+            if emoji_id not in live:
+                out.append(res)
+    return out

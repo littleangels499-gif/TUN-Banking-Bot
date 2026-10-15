@@ -343,8 +343,7 @@ def register(bank: app_commands.Group, svc: Services):
         await reply(interaction, card=out)
         await svc.alerts.econ(out)
         await svc.alerts.flush_events()
-        if member_nation_id:
-            await svc.alerts.dm(svc.alerts.discord_id_for(member_nation_id), out)
+        await svc.alerts.flush_notifications()          # the member's DM was queued with the completed withdrawal (if it completed)
 
     def find_or_request_approval(requester: str, payload: dict, reason: str):
         """Return (approval_id, approver_id_or_None, message_for_requester)."""

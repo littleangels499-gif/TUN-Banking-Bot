@@ -222,7 +222,7 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         if m["frozen"]:
             c.add(f"{icons.status('freeze')} Account status", "FROZEN by ECON: withdrawals are disabled.")
             c.color = A.ORANGE
-        if st["state"] != "NORMAL" and st["state"] != "WARNING":
+        if st["state"] not in ("NORMAL", "WARNING", "DISCREPANCY_NOT_BLOCKING"):
             c.add(f"{icons.status('warn')} Bank status", "Some banking functions are temporarily restricted for review.")
         return c, m
 
@@ -233,12 +233,12 @@ def register(bank: app_commands.Group, nation: app_commands.Group, svc: Services
         card, m = got
         with svc.db.read() as conn:
             rows = conn.execute(
-                "SELECT ts, entry_type, bucket, resource, delta FROM ledger_entries WHERE nation_id=? "
+                f"SELECT ts, {L.LABELED_TYPE_SQL} AS entry_type, bucket, resource, delta FROM ledger_entries WHERE nation_id=? "
                 "AND NOT (entry_type IN ('LOCK','RELEASE') AND bucket='LOCKED') ORDER BY id DESC LIMIT 6",
                 (m["nation_id"],)).fetchall()
         if rows:
             card.add(f"{icons.status('time')} Recent activity", "\n".join(
-                f"`{r['ts'][5:16].replace('T', ' ')}` {icons.resource(r['resource'])} {r['entry_type'].title()} · "
+                f"`{r['ts'][5:16].replace('T', ' ')}` {icons.resource(r['resource'])} {r['entry_type'].replace('_', ' ').title()} · "
                 f"{'+' if r['delta'] > 0 else '−'}{M.fmt_units(r['resource'], abs(r['delta']))}" for r in rows))
         return card
 

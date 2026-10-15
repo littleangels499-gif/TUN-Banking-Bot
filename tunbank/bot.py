@@ -19,7 +19,7 @@ from .config import cfg_int
 from .db import Database, prune_backups
 from .pnw import PnWClient
 from .scanner import Scanner
-from .ui import Services, post_outcomes
+from .ui import Services, guild_allowed, post_outcomes
 from .util import now_iso, seconds_since
 from .valuation import PriceService
 from .withdrawals import WithdrawalService
@@ -89,6 +89,17 @@ class TunBankBot(commands.Bot):
         self.add_view(self.svc.panel_view())                           # the banking panel keeps working after restarts
         self.add_view(cmds_convert.ConversionPanelView(self.svc))     # the panel button keeps working after restarts
         self.tree.on_error = self.on_tree_error
+
+        async def guild_lock(interaction: discord.Interaction) -> bool:
+            if guild_allowed(self.settings, interaction):
+                return True
+            log.warning("refused a command from a server that is not this bot's home server (guild %s)", interaction.guild_id)
+            try:
+                await interaction.response.send_message("This bot is only set up for its own alliance's Discord server.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return False
+        self.tree.interaction_check = guild_lock
         for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit, loan, trade, offshore_grp):
             self.tree.add_command(g)
         if self.settings.guild_id:
@@ -109,6 +120,25 @@ class TunBankBot(commands.Bot):
         except discord.HTTPException:
             pass
 
+    async def _check_icon_pack(self):
+        """If a configured PnW icon was deleted from the bot's emojis, fall back to the default so no broken emoji text is shown."""
+        from . import icons as _icons
+        from .config import cfg_get, cfg_set
+        try:
+            emojis = await self.fetch_application_emojis()
+        except Exception as exc:  # noqa: BLE001 - offline / older library: keep whatever is configured
+            log.info("icon pack check skipped: %s", exc)
+            return
+        with self.db.read() as conn:
+            configured = {r: cfg_get(conn, f"icon_{r}") for r in _icons.DEFAULT_RESOURCE_ICONS}
+        stale = _icons.stale_pack_icons(configured, emojis)
+        if stale:
+            with self.db.tx() as conn:
+                for r in stale:
+                    cfg_set(conn, f"icon_{r}", "", "system:icon-check")
+                _icons.load_from_db(conn)
+            log.warning("PnW icon(s) no longer exist on the bot, using the default icons for: %s", ", ".join(stale))
+
     async def on_ready(self):
         if self._ready_once:
             return
@@ -121,6 +151,8 @@ class TunBankBot(commands.Bot):
             for n in notes:
                 log.warning("startup recovery: %s", n)
             await self.svc.alerts.flush_events()
+            await self.svc.alerts.flush_notifications()
+            await self._check_icon_pack()
             with self.db.read() as conn:
                 stuck = [r["id"] for r in conn.execute("SELECT id FROM bulk_batches WHERE status='RUNNING'")]
             if stuck:
@@ -179,6 +211,7 @@ class TunBankBot(commands.Bot):
             else:
                 log.warning("scan failed: %s", res.error)
             await self.svc.alerts.flush_events()
+            await self.svc.alerts.flush_notifications()
         except Exception:  # noqa: BLE001
             log.exception("scan loop error")
 
@@ -187,7 +220,7 @@ class TunBankBot(commands.Bot):
         """Fill in / refresh nation names (also for OLD records), a small batch at a time."""
         try:
             from . import identity as _identity
-            await _identity.refresh_some(self.db, self.pnw, 40)
+            await _identity.refresh_some(self.db, self.svc.pnw, 40)
         except Exception:  # noqa: BLE001
             log.exception("nation name refresh failed")
 

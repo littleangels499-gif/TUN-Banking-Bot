@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 
 from . import bankrec as B
+from . import external as EX
 from . import intents as INT
 from . import ledger as L
 from . import money as M
@@ -493,6 +494,22 @@ def _process_outbound(conn, n: dict, ctx: Ctx) -> Outcome:
         return out
 
     if tx is None:
+        verdict, why = EX.decide(conn, n, ctx)
+        if verdict == "AUTO":
+            B.insert_record(conn, n, direction="OUT", classification="EXTERNAL_OUTFLOW", status="NO_CREDIT",
+                            snapshot_id=ctx.snapshot_id)
+            got = EX.record_withdrawal(conn, record_id=n["id"], nation_id=n["receiver_id"], decision="AUTO",
+                                       decided_by="system:scanner", source_label="offshore", snapshot_id=ctx.snapshot_id,
+                                       note="Money left the offshore for this linked member without going through TUN Bank")
+            offshore_payout_debit(conn, n["id"], ctx.offshore_id)
+            out.kind, out.classification = "EXTERNAL_WITHDRAWAL", "EXTERNAL_OUTFLOW"
+            out.before, out.after = got["before"], got["after"]
+            out.note = "External withdrawal deducted from the member's balance" + (
+                f" (now negative: {', '.join(got['negative'])})" if got["negative"] else "")
+            return out
+        if verdict == "REVIEW":
+            return external(f"Money left the offshore for a member outside TUN Bank, but I am not sure it should be charged: {why} "
+                            "Use /bank review to charge it to the member or mark it as alliance money.", "WARNING", "EXTERNAL_OUTFLOW")
         return external("Money left the alliance bank but not through TUN Bank "
                         "(in-game withdrawal or another bot).", "WARNING", "EXTERNAL_OUTFLOW")
 
@@ -542,12 +559,13 @@ def credit_pending(conn, ctx_members: dict | None) -> list:
 
 
 def resolve_review(conn, *, record_id: int, action: str, actor: str, note: str,
-                   nation_id: int | None = None, snapshot_id=None) -> Outcome:
+                   nation_id: int | None = None, snapshot_id=None, offshore_id: int | None = None) -> Outcome:
     """ECON decision on a record the bot could not classify on its own.
 
     'credit'    - it IS a member deposit for nation_id (still tied to the real PnW record)
     'alliance'  - it is alliance money; nobody is credited
     'dismiss'   - acknowledge (used for external outflows)
+    'withdrawal'- it IS an external withdrawal by the nation that received it: deduct it from that member's balance
     """
     if not note or not note.strip():
         raise L.LedgerError("A reason is required.")
@@ -569,6 +587,18 @@ def resolve_review(conn, *, record_id: int, action: str, actor: str, note: str,
         res = L.credit_deposit(conn, pnw_record_id=record_id, nation_id=nation_id, amounts=amounts,
                                actor=actor, snapshot_id=snapshot_id, note=f"review: {note}")
         out.kind, out.before, out.after = "CREDIT", res["before"], res["after"]
+    elif action == "withdrawal":
+        if rec["direction"] != "OUT" or rec["status"] != "AWAITING_REVIEW":
+            raise L.LedgerError("Only an outgoing record waiting for review can be charged as an external withdrawal.")
+        if rec["receiver_type"] != 1 or (nation_id is not None and nation_id != rec["receiver_id"]):
+            raise L.LedgerError(f"It can only be charged to the nation that received it (#{rec['receiver_id']}).")
+        nation_id = out.nation_id = rec["receiver_id"]
+        conn.execute("UPDATE pnw_records SET status='NO_CREDIT' WHERE id=?", (record_id,))
+        got = EX.record_withdrawal(conn, record_id=record_id, nation_id=nation_id, decision="STAFF", decided_by=str(actor),
+                                   note=f"review: {note}", source_label="offshore" if offshore_id and rec["sender_id"] == offshore_id else "bank",
+                                   snapshot_id=snapshot_id)
+        offshore_payout_debit(conn, record_id, offshore_id)
+        out.kind, out.before, out.after = "EXTERNAL_WITHDRAWAL", got.get("before"), got.get("after")
     elif action == "alliance":
         conn.execute("UPDATE pnw_records SET classification='OTHER', status='NO_CREDIT' WHERE id=?",
                      (record_id,))
@@ -584,7 +614,8 @@ def resolve_review(conn, *, record_id: int, action: str, actor: str, note: str,
         (str(actor), now_iso(), f"Reviewed ({action}): {note}", str(record_id)))
     from . import configaudit as CA
     CA.record(conn, actor=actor, setting="record_classification", previous=f"{rec['classification']} / {rec['status']}",
-              new={"credit": "member deposit (credited)", "alliance": "alliance money (no credit)", "dismiss": "dismissed"}[action],
+              new={"credit": "member deposit (credited)", "alliance": "alliance money (no credit)", "dismiss": "dismissed",
+                   "withdrawal": "external withdrawal (deducted from the member)"}[action],
               target=f"PnW record #{record_id}" + (f" → nation [#{nation_id}]" if nation_id else "") + f" · {note}",
               category="CLASSIFICATION", only_if_changed=False)
     L.audit(conn, actor, "RECORD_REVIEWED", f"pnw:{record_id}",

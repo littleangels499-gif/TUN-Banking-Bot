@@ -227,6 +227,12 @@ async def confirm(svc: Services, interaction: discord.Interaction, card: A.Card)
     return bool(view.value)
 
 
+def guild_allowed(settings, interaction) -> bool:
+    """The bot serves ONE alliance, so when GUILD_ID is set every command must come from that server (not just be synced there)."""
+    home = getattr(settings, "guild_id", None)
+    return not home or getattr(interaction, "guild_id", None) == home
+
+
 async def post_outcomes(svc: Services, outcomes):
     """Send alerts for scanner outcomes (ECON log + member DMs)."""
     for o in outcomes:
@@ -238,8 +244,14 @@ async def post_outcomes(svc: Services, outcomes):
                     await svc.alerts.dm(svc.alerts.discord_id_for(o.nation_id), A.member_deposit_dm(o))
             elif o.kind in ("DONATION", "LOAN", "REVIEW", "OUTGOING_LINKED", "EXTERNAL_OUTFLOW", "OFFSHORE"):
                 await svc.alerts.econ(A.classified_card(o, name))
+            elif o.kind == "EXTERNAL_WITHDRAWAL":
+                await svc.alerts.econ(A.external_withdrawal_card(o, name))
         except Exception:  # noqa: BLE001
             log.exception("could not send alert for record %s", getattr(o, "record_id", "?"))
+    try:
+        await svc.alerts.flush_notifications()           # member DMs queued with the recorded movements above
+    except Exception:  # noqa: BLE001
+        log.exception("could not deliver member notifications")
     try:
         await svc.alerts.flush_tax_turns(svc.prices)
     except Exception:  # noqa: BLE001

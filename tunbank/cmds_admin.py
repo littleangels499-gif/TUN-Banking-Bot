@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import logging
 from typing import Optional
@@ -10,6 +11,8 @@ import discord
 from discord import app_commands
 
 from . import alerts as A
+from . import config_reset as CRST
+from . import config_view as CV
 from . import identity
 from . import configaudit as CA
 from . import credentials as CR
@@ -115,9 +118,9 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         await svc.alerts.econ(A.Card("Withdrawals RESUMED", f"{actor_label(interaction)}: {reason}", A.GREEN))
 
     # ------------------------------------------------------------ adjust
-    @bank.command(name="adjust", description="ECON: documented correction of an ACCOUNTING ERROR (not a way to add money)")
+    @bank.command(name="adjust", description="ECON: correct an overstated balance (to ADD funds use /bank credit - every credit must be funded)")
     @app_commands.describe(nation="Member: id, name, link or @user", reason="What went wrong", evidence="Ticket, PnW record id, link...",
-                           add="Amounts to ADD (needs a 2nd approver)", remove="Amounts to REMOVE (below zero = a debt, needs a 2nd approver)")
+                           add="(Not allowed any more: use /bank credit)", remove="Amounts to REMOVE (below zero = a debt, needs a 2nd approver)")
     async def adjust(interaction: discord.Interaction, nation: str, reason: str, evidence: str,
                      add: str = "", remove: str = ""):
         if not await need(svc, interaction, "MINISTER"):
@@ -126,8 +129,12 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         nation_id = await nation_arg(svc, interaction, nation)
         if nation_id is None:
             return
-        if not add.strip() and not remove.strip():
-            return await reply(interaction, "Give `add` and/or `remove` amounts.")
+        if add.strip():
+            return await reply(interaction, "Adding money straight to a balance would create funds from nowhere, so `/bank adjust` can no longer do it.\n"
+                                            "Use **`/bank credit`** instead: it takes the same amount from alliance funds, another member, or an alliance "
+                                            "ownership account, so both sides are recorded and the books still balance.")
+        if not remove.strip():
+            return await reply(interaction, "Give the `remove` amounts. (To add funds use `/bank credit`.)")
         deltas = {}
         try:
             if add.strip():
@@ -201,7 +208,137 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
         out = A.adjustment_card(nation_id, deltas, val, reason, evidence, res, actor_label(interaction), res["adjustment_id"])
         await reply(interaction, card=out)
         await svc.alerts.econ(out)
-        await svc.alerts.dm(svc.alerts.discord_id_for(nation_id), out)
+        await svc.alerts.flush_notifications()                 # the member's DM (queued in the same transaction as the change)
+
+    # ------------------------------------------------- /bank credit (funded: every credit has an equal, recorded debit)
+    @bank.command(name="credit", description="ECON: credit a member's balance, funded from alliance funds, another member or an ownership account")
+    @app_commands.describe(nation="Member to credit: id, name, link or @user", amounts="e.g. money=5m food=20k",
+                           reason="Why (mandatory, audited)", source="Where the money comes from",
+                           from_member="Source = a member: id, name, link or @user",
+                           from_alliance="Source = an ownership account: alliance id",
+                           reference="Optional ticket / link / PnW record",
+                           override_reason="ADMIN only: justify crediting even though the source is short (creates a deficit)")
+    @app_commands.choices(source=[app_commands.Choice(name="Alliance funds (default)", value="ALLIANCE"),
+                                  app_commands.Choice(name="Another member's balance", value="MEMBER"),
+                                  app_commands.Choice(name="An alliance ownership account", value="OWNERSHIP")])
+    async def credit(interaction: discord.Interaction, nation: str, amounts: str, reason: str,
+                     source: Optional[app_commands.Choice[str]] = None, from_member: str = "", from_alliance: str = "",
+                     reference: str = "", override_reason: str = ""):
+        if not await need(svc, interaction, "MINISTER"):
+            return
+        if override_reason.strip() and not await need(svc, interaction, "ADMIN"):
+            return
+        await thinking(interaction)
+        from . import offshore_ledger as OL
+        from . import transfers as T
+        from .banks import live_holdings
+        stype = source.value if source else "ALLIANCE"
+        recipient = await nation_arg(svc, interaction, nation)
+        if recipient is None:
+            return
+        try:
+            amts = M.parse_amounts(amounts)
+        except M.AmountError as exc:
+            return await reply(interaction, f"I couldn't read those amounts: {exc}")
+        if not amts:
+            return await reply(interaction, "Give the amounts to credit, e.g. `money=5m food=20k`.")
+        if not reason.strip():
+            return await reply(interaction, "A reason is mandatory.")
+        sid = None
+        if stype == "MEMBER":
+            if not from_member.strip():
+                return await reply(interaction, "Source is a member: fill in `from_member`.")
+            sid = await nation_arg(svc, interaction, from_member)
+            if sid is None:
+                return
+        elif stype == "OWNERSHIP":
+            try:
+                sid = int(from_alliance.strip())
+            except ValueError:
+                return await reply(interaction, "Source is an ownership account: give the alliance id in `from_alliance`.")
+        elif from_member.strip() or from_alliance.strip():
+            return await reply(interaction, "You gave a member/alliance but the source is alliance funds. Pick the matching source.")
+        holdings = None
+        if stype == "ALLIANCE":
+            try:
+                holdings, _ = await live_holdings(svc.pnw, svc.settings, svc.db)
+            except (PnWRejected, PnWUncertain) as exc:
+                log.warning("credit: could not read the real bank (%s)", exc)
+        with svc.db.read() as conn:
+            if not L.get_member(conn, recipient):
+                return await reply(interaction, f"{identity.label(recipient)} has no TUN Bank account. Link the nation first; an account is never created silently.")
+            if stype == "OWNERSHIP" and not OL.registered(conn, sid):
+                return await reply(interaction, "That alliance is not registered for the shared offshore.")
+            if stype == "MEMBER" and not L.get_member(conn, sid):
+                return await reply(interaction, "The source member has no TUN Bank account.")
+            avail = T.source_available(conn, stype, sid, holdings)
+            short = T.shortfall(avail, amts)
+            before_r = L.get_balances(conn, recipient, "AVAILABLE")
+        override = bool(override_reason.strip())
+        if short and not override:
+            lines = "\n".join(f"{M.LABELS[r]}: short by {M.fmt_units(r, v)}" for r, v in short.items())
+            more = ("The real bank could not be read, so alliance funds cannot be verified right now." if avail is None else lines)
+            tail = ("" if stype == "OWNERSHIP" else "\nAn ADMIN may allow this deficit by repeating the command with `override_reason`.")
+            return await reply(interaction, f"The source does not cover this credit, so nothing was done.\n{more}{tail}")
+        snap = await svc.prices.get()
+        val = value_amounts(amts, snap)
+        payload = T.payload_for(recipient=recipient, amounts=amts, source_type=stype, source_id=sid, reason=reason,
+                                reference=reference, override=override)
+        def find():
+            with svc.db.tx() as conn:
+                return L.find_or_request_approval(conn, "ADJUSTMENT", uid(interaction), payload, reason)
+        approval_id, approved_by = await asyncio.to_thread(find)
+        src_text = {"ALLIANCE": "Alliance funds", "MEMBER": f"Member {identity.label(sid) if sid else ''}",
+                    "OWNERSHIP": f"Ownership account of alliance #{sid}"}[stype]
+        if not approved_by:
+            c = A.Card("Credit needs approval", "A funded credit still needs a SECOND staff member.", A.ORANGE, kind="APPROVAL")
+            c.add("Request", f"#{approval_id} by {actor_label(interaction)}")
+            c.add("Credit", f"{identity.label(recipient)}\n{fmt.amount_lines(amts)}")
+            c.add("Funded from", src_text, True)
+            c.add("Reason", reason)
+            if override:
+                c.add("⚠️ DEFICIT OVERRIDE", f"Source is short. Justification: {override_reason}")
+            c.add("How to approve", f"A different Minister runs `/bank approve approval_id:{approval_id}`.")
+            await svc.alerts.econ(c)
+            return await reply(interaction, f"Approval request #{approval_id} posted. After a different Minister approves it, "
+                                            "run this same command again.")
+        card = A.Card("Confirm CREDIT", "Both sides are recorded. This is permanent and audited.", A.ORANGE)
+        card.add("Credit to", identity.label(recipient), True)
+        card.add("Funded from", src_text, True)
+        card.add("Amounts", fmt.amount_lines(amts) + "\n" + fmt.value_line(val))
+        card.add("Recipient balance", "\n".join(f"{M.LABELS[r]}: {M.fmt_units(r, before_r.get(r, 0))} → {M.fmt_units(r, before_r.get(r, 0) + a)}"
+                                                for r, a in amts.items()))
+        if avail is not None and not short:
+            card.add("Source after", "\n".join(f"{M.LABELS[r]}: {M.fmt_units(r, avail.get(r, 0))} → {M.fmt_units(r, avail.get(r, 0) - a)}"
+                                                 for r, a in amts.items()))
+        if short:
+            card.add("⚠️ DEFICIT OVERRIDE", "The source is short by:\n" + "\n".join(f"{M.LABELS[r]}: {M.fmt_units(r, v)}" for r, v in short.items())
+                     + f"\nThis creates a deficit that reconciliation will report. Justification: {override_reason}")
+        card.add("Reason", reason)
+        if not await confirm(svc, interaction, card):
+            return await reply(interaction, "Cancelled.")
+        import uuid
+        idem = f"credit:{uuid.uuid4().hex}"
+        try:
+            def do():
+                with svc.db.tx() as conn:
+                    return T.post_transfer(conn, recipient=recipient, amounts=amts, source_type=stype, source_id=sid, reason=reason,
+                                           reference=reference, operator=uid(interaction), approval_id=approval_id, idem=idem,
+                                           holdings=holdings, snapshot_id=snap.id if snap else None, override=override,
+                                           override_reason=override_reason)
+            res = await asyncio.to_thread(do)
+        except L.LedgerError as exc:
+            return await reply(interaction, f"Not applied: {exc}")
+        out = A.Card(f"Credit {res['ref']}", f"{identity.label(recipient)} was credited. Both sides are recorded.", A.GREEN, kind="ADJUSTMENT")
+        out.add("Amounts", fmt.amount_lines(amts) + "\n" + fmt.value_line(val))
+        out.add("Funded from", src_text, True)
+        out.add("Reason", reason)
+        if res.get("overridden"):
+            out.add("⚠️ Deficit override", f"By {actor_label(interaction)}: {override_reason}")
+        out.add("Reference", f"{res['ref']} · approval #{approval_id}", True)
+        await reply(interaction, card=out)
+        await svc.alerts.econ(out)
+        await svc.alerts.flush_notifications()                 # recipient (and source member) DMs, queued with the change
 
     # ----------------------------------------------------------- approvals
     @bank.command(name="approve", description="ECON: approve a pending request made by someone else")
@@ -277,6 +414,40 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 L.audit(conn, uid(interaction), "CONFIG_CHANGED", "approval_threshold_value", {"value": dollars})
         await asyncio.to_thread(do)
         await reply(interaction, f"Approval threshold set to ${max(0, dollars):,}." if dollars > 0 else "Approval requirement switched off.")
+
+    @bankset.command(name="gate", description="Admin: turn the reconciliation transaction gate ON or OFF (monitoring always stays on)")
+    @app_commands.describe(mode="ON: known deficits block banking · OFF: they are reported but banking continues")
+    @app_commands.choices(mode=[app_commands.Choice(name="ON (deficits block banking)", value="on"),
+                                app_commands.Choice(name="OFF (report only, banking continues)", value="off"),
+                                app_commands.Choice(name="Show current setting", value="show")])
+    async def gate(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+        with svc.db.read() as conn:
+            now_on = L.reconcile_gate_enabled(conn)
+            nblock = len(L.blocking_events(conn))
+            nopen = L.integrity_state(conn)["open_events"]
+        status = (f"{icons.status('lock')} **ON** — open reconciliation deficits block withdrawals, conversions and deposits-from-Discord."
+                  if now_on else f"{icons.status('ok')} **OFF** — deficits are still detected, reported and audited, but they do NOT block banking.")
+        if mode.value == "show":
+            return await reply(interaction, f"Reconciliation transaction gate: {status}\nOpen findings: **{nopen}** · currently blocking: **{nblock}**")
+        want_on = mode.value == "on"
+        if want_on == now_on:
+            return await reply(interaction, f"Already set. Reconciliation transaction gate: {status}")
+        await thinking(interaction)
+        c = A.Card("Change the reconciliation gate", "", A.ORANGE)
+        c.add("New setting", "**ON** — deficits will block banking again" if want_on else "**OFF** — deficits will be reported but will not block banking", False)
+        c.add("What stays ON either way", "Emergency lock, ECON pause, hash-chain and balance-integrity checks, uncertain/stuck PnW transfer protection, "
+                                         "duplicate protection, confirmations, limits, approvals, permissions, audit log.", False)
+        c.add("Never happens automatically", "No member balance and no ownership share is changed to make reconciliation pass.", False)
+        if not await confirm(svc, interaction, c):
+            return await interaction.followup.send("Cancelled. The gate was not changed.", ephemeral=True)
+        def do():
+            with svc.db.tx() as conn:
+                cfg_set(conn, "reconcile_gate_enabled", "1" if want_on else "0", uid(interaction))
+                L.audit(conn, uid(interaction), "RECONCILE_GATE_CHANGED", "reconcile_gate_enabled", {"enabled": want_on})
+        await asyncio.to_thread(do)
+        await interaction.followup.send(f"Reconciliation transaction gate is now **{'ON' if want_on else 'OFF'}**.", ephemeral=True)
 
     # -------------------------------------------------------------- limits
     @bankset.command(name="limits", description="ECON: show all transfer limits")
@@ -526,25 +697,120 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
     async def need_admin_quietly(interaction) -> bool:
         return await need(svc, interaction, "ADMIN")
 
-    @bankset.command(name="config", description="Admin: view or change a bank setting")
-    async def config(interaction: discord.Interaction, key: str = "", value: str = ""):
+    @bankset.command(name="config", description="Admin: view the bank settings in plain language, or change one")
+    @app_commands.describe(setting="Which setting (type to search by name) - leave empty to browse them all",
+                           value="The new value, e.g. on / off, 5m, 2h, #channel",
+                           category="Jump to one page of settings")
+    @app_commands.choices(category=[app_commands.Choice(name=g, value=g) for g in CV.GROUPS])
+    async def config(interaction: discord.Interaction, setting: str = "", value: str = "",
+                     category: Optional[app_commands.Choice[str]] = None):
         if not await need(svc, interaction, "ADMIN"):
             return
-        if not key:
+        if not setting:
+            groups = list(CV.GROUPS)
             with svc.db.read() as conn:
-                lines = [f"`{k}` = `{cfg_get(conn, k)}` — {d}" for k, (_, d) in DEFAULTS.items()]
-            return await reply(interaction, "\n".join(lines)[:1900])
-        if key not in DEFAULTS:
-            return await reply(interaction, "Unknown setting. Run `/bankset config` with no options to see them all.")
+                pages = [("overview", CV.render_overview(conn))] + [(g, CV.render_group(conn, g)) for g in groups]
+            pager = ItemPager(interaction.user.id, pages, lambda item, i, n: item[1])
+            if category is not None:
+                pager.index = 1 + groups.index(category.value)
+                pager._sync()
+            return await reply(interaction, card=pager.card(), view=pager)
+        key = CV.find_key(setting)
+        if key is None:
+            return await reply(interaction, "I don't know that setting. Run `/bankset config` with nothing filled in to browse them, "
+                                            "or start typing a name and pick it from the list.")
+        meta = CV.SETTINGS[key]
         if not value:
             with svc.db.read() as conn:
-                return await reply(interaction, f"`{key}` = `{cfg_get(conn, key)}`")
+                cur = cfg_get(conn, key)
+            c = A.Card(f"⚙️ {meta.label}", meta.help or "", A.BLUE)
+            c.add("Now", CV.human(key, cur), True)
+            c.add("Default", CV.human(key, DEFAULTS[key][0]), True)
+            c.add("To change it", f"`/bankset config setting:{meta.label} value:…`")
+            return await reply(interaction, card=c)
+        try:
+            new_value = CV.parse_value(key, value)
+        except ValueError as exc:
+            return await reply(interaction, f"Not changed. {exc}")
+        if key == "reconcile_gate_enabled":
+            return await reply(interaction, "Use **`/bankset gate`** for that one: it asks for a confirmation and explains what stays protected.")
         def do():
             with svc.db.tx() as conn:
-                cfg_set(conn, key, value, uid(interaction))
-                L.audit(conn, uid(interaction), "CONFIG_CHANGED", key, {"value": value})
-        await asyncio.to_thread(do)
-        await reply(interaction, f"`{key}` set to `{value}`.")
+                old = cfg_get(conn, key)
+                cfg_set(conn, key, new_value, uid(interaction))
+                L.audit(conn, uid(interaction), "CONFIG_CHANGED", key, {"value": new_value, "previous": old})
+                if key.startswith("icon_"):
+                    icons.load_from_db(conn)
+                return old
+        old = await asyncio.to_thread(do)
+        c = A.Card(f"⚙️ {meta.label} changed", "", A.GREEN)
+        c.add("Before", CV.human(key, old), True)
+        c.add("Now", CV.human(key, new_value), True)
+        await reply(interaction, card=c)
+
+    @config.autocomplete("setting")
+    async def config_setting_autocomplete(interaction: discord.Interaction, current: str):
+        cur = (current or "").lower()
+        out = []
+        for g, keys in CV.grouped().items():
+            for k in keys:
+                lab = CV.SETTINGS[k].label
+                if not cur or cur in lab.lower() or cur in k:
+                    out.append(app_commands.Choice(name=f"{lab} · {g}"[:100], value=k))
+        return out[:25]
+
+    # ------------------------------------------------- reset CONFIGURATION (never financial data)
+    @bankset.command(name="resetconfig", description="Admin / server owner: reset CONFIGURATION to defaults (never balances, members or history)")
+    @app_commands.describe(scope="What to reset", reason="Why (mandatory, audited)",
+                           confirm_phrase=f"Type {CRST.RESET_PHRASE} to confirm you understand")
+    @app_commands.choices(scope=[app_commands.Choice(name="Settings only (keeps roles, bankers, limits)", value="settings"),
+                                 app_commands.Choice(name="All configuration (settings, roles, bankers, limits, trade lists)", value="all")])
+    async def resetconfig(interaction: discord.Interaction, scope: app_commands.Choice[str], reason: str, confirm_phrase: str):
+        guild = getattr(interaction, "guild", None)
+        owner = bool(guild and getattr(guild, "owner_id", None) == interaction.user.id)
+        if not owner and not await need(svc, interaction, "ADMIN"):
+            return
+        if confirm_phrase.strip() != CRST.RESET_PHRASE:
+            return await reply(interaction, f"Nothing was changed. To reset, type exactly `{CRST.RESET_PHRASE}` in the confirm_phrase box.")
+        if not reason.strip():
+            return await reply(interaction, "A reason is mandatory.")
+        if scope.value == "all" and not svc.settings.owner_ids:
+            return await reply(interaction, "Nothing was changed: no bot owner is set in the environment (OWNER_DISCORD_IDS), so resetting the "
+                                            "roles too would leave nobody able to administer the bank. Set an owner first, or reset 'Settings only'.")
+        await thinking(interaction)
+        with svc.db.read() as conn:
+            pv = CRST.preview(conn, scope.value)
+        c = A.Card("Confirm: reset CONFIGURATION", "This changes how the bot is set up. It does NOT touch money.", A.RED)
+        c.add("Will be reset", "\n".join(f"• {CRST.DESCRIPTION[t]}" + (f" ({n} changed)" if t == "bank_config" else f" ({n})") for t, n in pv["will_reset"].items()))
+        c.add("Will NOT be touched, ever", "Member accounts and Discord/nation links · member API keys · balances · the ledger · transactions and PnW records · "
+                                          "loans · offshore ownership · audit history · emergency lock and bank state.")
+        if scope.value == "all":
+            c.add("After this", "Only the bot owners in the environment (OWNER_DISCORD_IDS) can administer the bank until you set the roles again with `/bankset setrole`.")
+        c.add("Safety", "A backup is taken first. The previous values are written to the audit log. If any protected record would change, the reset is cancelled.")
+        c.add("Reason", reason)
+        if not await confirm(svc, interaction, c):
+            return await interaction.followup.send("Cancelled. Nothing was changed.", ephemeral=True)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+        try:
+            await asyncio.to_thread(svc.db.backup_to, svc.settings.backup_dir / f"pre-config-reset-{stamp}.db")
+        except Exception as exc:  # noqa: BLE001
+            log.exception("backup before config reset failed")
+            return await interaction.followup.send(f"Nothing was changed: the safety backup failed ({exc}).", ephemeral=True)
+        try:
+            def do():
+                with svc.db.tx() as conn:
+                    done = CRST.reset(conn, scope=scope.value, actor=uid(interaction), reason=reason)
+                    icons.load_from_db(conn)
+                    return done
+            done = await asyncio.to_thread(do)
+        except L.LedgerError as exc:
+            return await interaction.followup.send(f"Not applied: {exc}", ephemeral=True)
+        out = A.Card("Configuration reset", f"By {actor_label(interaction)} · {reason}", A.ORANGE, kind="CONFIG")
+        out.add("Reset", "\n".join(f"• {CRST.DESCRIPTION[t]}: {n}" for t, n in done.items()))
+        out.add("Untouched", "Balances, members, links, API keys, transactions, loans, ledgers and audit history.")
+        out.add("Safety backup", f"`pre-config-reset-{stamp}.db`", True)
+        await interaction.followup.send(embed=A.to_embed(out), ephemeral=True)
+        await svc.alerts.config_audit(out)
 
     # ------------------------------------------------------------ icons
     RES_CHOICES = [app_commands.Choice(name=M.LABELS[r], value=r) for r in M.RESOURCES]
@@ -566,6 +832,41 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 icons.load_from_db(conn)
         await asyncio.to_thread(do)
         await reply(interaction, f"{icons.resource(resource.value)} **{resource.name}** icon is now shown as {icons.resource(resource.value)}.")
+
+    @bankset.command(name="iconpack", description="Admin: use the PnW resource icons uploaded to the bot (or go back to the defaults)")
+    @app_commands.choices(action=[app_commands.Choice(name="Apply the PnW icon pack", value="apply"),
+                                  app_commands.Choice(name="Go back to the default icons", value="revert")])
+    async def iconpack(interaction: discord.Interaction, action: app_commands.Choice[str]):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+        await thinking(interaction)
+        bot = svc.alerts.bot
+        found = {}
+        if action.value == "apply":
+            try:
+                found = icons.pack_from(await bot.fetch_application_emojis())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not read the bot's application emojis: %s", exc)
+                return await reply(interaction, "I couldn't read the bot's emojis from Discord just now, so nothing was changed. Try again in a minute.")
+            if not found:
+                return await reply(interaction, "No PnW icons are uploaded to the bot yet (emojis named `pnw_money`, `pnw_food`...). "
+                                                "Run `python scripts/install_pnw_icons.py` first (see docs/19_ICONS.md). Nothing was changed.")
+        def do():
+            with svc.db.tx() as conn:
+                for res in M.RESOURCES:
+                    new = found.get(res, "") if action.value == "apply" else ""
+                    if cfg_get(conn, f"icon_{res}") != new:
+                        cfg_set(conn, f"icon_{res}", new, uid(interaction))
+                L.audit(conn, uid(interaction), "ICON_PACK", action.value, {"applied": sorted(found)})
+                icons.load_from_db(conn)
+        await asyncio.to_thread(do)
+        missing = [M.LABELS[r] for r in M.RESOURCES if r not in found]
+        text = ("\n".join(f"{icons.resource(r)}  {M.LABELS[r]}" for r in M.RESOURCES))
+        c = A.Card(f"{icons.status('ok')} Icons updated", "PnW icons applied." if action.value == "apply" else "Default icons restored.", A.GREEN)
+        c.add("Now showing", text)
+        if action.value == "apply" and missing:
+            c.add("Using the default instead (no PnW icon uploaded)", ", ".join(missing))
+        await reply(interaction, card=c)
 
     @bankset.command(name="icons", description="Admin: preview every resource icon")
     async def show_icons(interaction: discord.Interaction):
@@ -615,6 +916,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
     @bank.command(name="review", description="ECON: decide on a PnW record the bot could not classify (leave record_id empty to list)")
     @app_commands.choices(action=[app_commands.Choice(name="credit (it is a member deposit)", value="credit"),
                                   app_commands.Choice(name="alliance (alliance money, no credit)", value="alliance"),
+                                  app_commands.Choice(name="withdrawal (charge it to the member who received it)", value="withdrawal"),
                                   app_commands.Choice(name="dismiss (acknowledge)", value="dismiss")])
     async def review(interaction: discord.Interaction, record_id: int = 0, action: Optional[app_commands.Choice[str]] = None,
                      nation: str = "", note: str = ""):
@@ -660,6 +962,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
             pager = ItemPager(interaction.user.id, list(rows), render, [
                 ("Credit to a nation…", "✅", "success", decide("credit", True)),
                 ("Alliance money", "🛡️", "secondary", decide("alliance", False)),
+                ("Charge to member", "📤", "danger", decide("withdrawal", False)),
                 ("Dismiss", "🗑️", "secondary", decide("dismiss", False))])
             return await reply(interaction, card=pager.card(), view=pager)
         if action is None or not note:
@@ -670,12 +973,13 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
                 with svc.db.tx() as conn:
                     return REC.resolve_review(conn, record_id=record_id, action=action.value, actor=uid(interaction),
                                               note=note, nation_id=nation_id or None,
-                                              snapshot_id=snap.id if snap else None)
+                                              snapshot_id=snap.id if snap else None,
+                                              offshore_id=svc.settings.offshore.alliance_id if svc.settings.offshore else None)
             out = await asyncio.to_thread(do)
         except L.LedgerError as exc:
             return await reply(interaction, f"Not applied: {exc}")
         await reply(interaction, f"Record #{record_id} resolved ({action.value}).")
-        if out.kind == "CREDIT":
+        if out.kind in ("CREDIT", "EXTERNAL_WITHDRAWAL"):
             out.valuation = value_amounts(out.amounts, snap)
             await post_outcomes(svc, [out])
 
