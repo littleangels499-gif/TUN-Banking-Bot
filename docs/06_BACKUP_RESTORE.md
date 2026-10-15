@@ -1,5 +1,7 @@
 # 6. Backup and restore
 
+> What exactly a backup contains, what it does not, and how to move to another Railway account and **verify** the move: see [18. Backups and moving](18_MOVE_TO_ANOTHER_RAILWAY.md).
+
 ## What is backed up automatically
 * **Daily**: one consistent backup per day in the Volume (`/data/backups/daily-YYYY-MM-DD.db`), newest 30 kept.
 * **Before every database upgrade**: `pre-migration-....db`.

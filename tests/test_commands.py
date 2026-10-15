@@ -11,6 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fake_discord  # noqa: E402
 
+# SAFETY: tests must never read a real .env (it holds live secrets, and a failing assertion would print them).
+import dotenv  # noqa: E402
+
+dotenv.load_dotenv = lambda *a, **k: False
+
 fake_discord.install()
 
 import discord  # noqa: E402
@@ -175,26 +180,37 @@ class Cmd(unittest.TestCase):
             i = self.call(self.bankset, name, self.alice, *args)
             self.assertIn("permission", i.text(), name)
 
-    def test_adjust_positive_needs_second_person(self):
-        self.fund_alice({"money": 1000})
-        i = self.call(self.bank, "adjust", self.admin, 1, "missed deposit", "ticket 9", add="money=100")
-        self.assertIn("Approval request", i.text())
-        with self.db.read() as c:
-            self.assertEqual(L.get_balances(c, 1, "AVAILABLE")["money"], 100000)
-        # same person can't approve
-        i = self.call(self.bank, "approve", self.admin, 1)
-        self.assertIn("different staff member", i.text())
-        # second person (give them Minister via the owner-only setrole path)
+    def give_minister(self):
         with self.db.tx() as c:
             c.execute("INSERT INTO bankers(discord_id,added_by,added_at) VALUES('222','x','x')")
             c.execute("INSERT INTO role_permissions(level,role_id) VALUES('MINISTER','77')")
         self.econ2.roles = [discord.Role(77)]
-        i = self.call(self.bank, "approve", self.econ2, 1)
-        self.assertIn("Approved", i.text())
+
+    def test_adjust_can_no_longer_add_unfunded_money(self):
+        self.fund_alice({"money": 1000})
         i = self.call(self.bank, "adjust", self.admin, 1, "missed deposit", "ticket 9", add="money=100")
-        self.assertIn("Accounting adjustment", i.text())
+        self.assertIn("/bank credit", i.text())
+        with self.db.read() as c:
+            self.assertEqual(L.get_balances(c, 1, "AVAILABLE")["money"], 100000)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM approval_requests").fetchone()[0], 0)
+
+    def test_credit_needs_second_person_and_is_funded(self):
+        self.fund_alice({"money": 1000})
+        self.pnw.holdings = {"money": 100000 + 500000}                 # the alliance really owns $5,000 beyond Alice's $1,000
+        i = self.call(self.bank, "credit", self.admin, 1, "money=100", "missed deposit")
+        self.assertIn("Approval request", i.text())
+        with self.db.read() as c:
+            self.assertEqual(L.get_balances(c, 1, "AVAILABLE")["money"], 100000)
+        i = self.call(self.bank, "approve", self.admin, 1)               # same person can't approve
+        self.assertIn("different staff member", i.text())
+        self.give_minister()
+        self.assertIn("Approved", self.call(self.bank, "approve", self.econ2, 1).text())
+        i = self.call(self.bank, "credit", self.admin, 1, "money=100", "missed deposit")
+        self.assertIn("TUN-ADJ1", i.text())
         with self.db.read() as c:
             self.assertEqual(L.get_balances(c, 1, "AVAILABLE")["money"], 110000)
+            lines = [tuple(r) for r in c.execute("SELECT account_type, resource, delta FROM balance_transfer_lines ORDER BY id")]
+        self.assertEqual(lines, [("MEMBER", "money", 10000), ("ALLIANCE", "money", -10000)])      # both sides recorded
 
     def test_large_econ_withdrawal_needs_approval(self):
         self.fund_alice({"money": 100000000})
@@ -356,7 +372,7 @@ class Cmd(unittest.TestCase):
         self.assertIn("needs a decision", i.text())
         self.assertIn("PnW record #950", i.text())
         view = i.view()
-        self.assertEqual(list(view.handlers), ["Credit to a nation…", "Alliance money", "Dismiss"])
+        self.assertEqual(list(view.handlers), ["Credit to a nation…", "Alliance money", "Charge to member", "Dismiss"])
         pressed = self.press(view, "Credit to a nation…", self.admin)
         pressed.modal.children[0].value = "alice"
         pressed.modal.children[1].value = "member paid with a typo in the note"
@@ -519,7 +535,8 @@ class Cmd(unittest.TestCase):
 
     def test_approvals_one_per_page_with_approve_button(self):
         self.fund_alice({"money": 1000})
-        self.call(self.bank, "adjust", self.admin, "alice", "missed deposit", "ticket 9", add="money=100")
+        self.pnw.holdings = {"money": 100000 + 500000}
+        self.call(self.bank, "credit", self.admin, "alice", "money=100", "missed deposit")
         with self.db.tx() as c:
             c.execute("INSERT INTO role_permissions(level,role_id) VALUES('MINISTER','77')")
         self.econ2.roles = [discord.Role(77)]
@@ -838,10 +855,14 @@ class Cmd(unittest.TestCase):
         cfg = self.press(hv, "Configuration", self.admin).edited["embed"]
         self.assertIn("/bankset addbanker", cfg.description)
         self.assertIn("Admin", cfg.description)
-        self.assertEqual(cfg.footer_text, "Configuration · page 1 of 4 · TUN Bank")
-        nxt = self.press(hv, "Next page", self.admin).edited["embed"]
-        self.assertIn("page 2 of 4", nxt.footer_text)
-        self.assertIn("/bankset setrole", self.press(hv, "Next page", self.admin).edited["embed"].description)
+        total = int(cfg.footer_text.split(" of ")[1].split(" ")[0])
+        self.assertTrue(cfg.footer_text.startswith("Configuration · page 1 of "))
+        texts = [cfg.description]
+        for _ in range(total - 1):                                    # every page is reachable; adding commands never breaks this
+            texts.append(self.press(hv, "Next page", self.admin).edited["embed"].description)
+        alltext = "\n".join(texts)
+        for must in ("/bankset setrole", "/bankset config", "/bankset resetconfig", "/bankset gate"):
+            self.assertIn(must, alltext)
         self.press(hv, "Banking", self.admin)
         pages = []
         for _ in range(3):

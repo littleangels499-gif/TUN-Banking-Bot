@@ -15,11 +15,11 @@
 
 ## ECON staff (Auditor = read, Banker = daily, Minister = reserve/adjust/approve, Admin = settings)
 **`/bank`** `holdings` (vault, needs the treasury permission) · `linknation` · `offshore` (move funds main → offshore) · `scandeposits` · `reconcile` · `reserve` · `release` · `withdraw` (you pick the funding source) ·
-`adjust` · `approve` / `approvals` / `revoke` · `freeze` / `unfreeze` · `lock` / `unlock` (pause withdrawals) ·
+`adjust` (removals only) · `credit` (funded credit, see guide 21) · `approve` / `approvals` / `revoke` · `freeze` / `unfreeze` · `lock` / `unlock` (pause withdrawals) ·
 `transactions` · `resolvetx` · `review` · `records` (Excel exports)
 
 **`/bankset`** (Admin settings; Discord allows only 25 commands per group, so these live in their own group)
-`setrole` · `setaccess` / `access` · `setlogchannel` · `importopening` · `/deposit reset` · `conversionpanel` (see guide 13) · `/loan …` (see guide 14) · `panel` · `excess` · `/trade …` (see guide 16) · `/offshore …` (see guide 17) · `config` · `seticon` / `icons` · `addbanker` / `removebanker` / `listbankers` · `limits` · `settransferlimit` ·
+`setrole` · `setaccess` / `access` · `setlogchannel` · `importopening` · `/deposit reset` · `conversionpanel` (see guide 13) · `/loan …` (see guide 14) · `panel` · `excess` · `/trade …` (see guide 16) · `/offshore …` (see guide 17) · `config` · `gate` · `resetconfig` · `seticon` / `icons` / `iconpack` · `addbanker` / `removebanker` / `listbankers` · `limits` · `settransferlimit` ·
 `setdailylimit` · `setrolelimit` · `setnationlimit` · `requireapproval` · `backup` · `restorestage`
 
 `/chart vault · members · deposits · tax · nation` (staff charts)
