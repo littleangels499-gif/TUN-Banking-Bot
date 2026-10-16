@@ -29,17 +29,17 @@ class BankAccess:
     the credentials of a nation that belongs to that bank's alliance and may withdraw from it."""
     name: str                   # "main" or "offshore"
     alliance_id: int
-    read_key: str               # API key that can view this alliance's bank
-    api_key: str | None         # API key of the nation that owns bot_key (None = cannot send from this bank)
-    bot_key: str | None
+    read_key: str = field(repr=False)               # API key that can view this alliance's bank   (repr=False: never printed)
+    api_key: str | None = field(repr=False)         # API key of the nation that owns bot_key (None = cannot send from this bank)
+    bot_key: str | None = field(repr=False)
 
 
 @dataclass
 class Settings:
-    discord_token: str
-    pnw_api_key: str
-    pnw_bot_key: str
-    pnw_bot_key_api_key: str
+    discord_token: str = field(repr=False)          # every secret below has repr=False so it can never appear in a log or error
+    pnw_api_key: str = field(repr=False)
+    pnw_bot_key: str = field(repr=False)
+    pnw_bot_key_api_key: str = field(repr=False)
     alliance_id: int
     data_dir: Path
     owner_ids: set = field(default_factory=set)
@@ -47,12 +47,12 @@ class Settings:
     pnw_url: str = "https://api.politicsandwar.com/graphql"
     pnw_auth_mode: str = "query"
     offshore: BankAccess | None = None          # set when OFFSHORE_ALLIANCE_ID is configured
-    main_bot_key: str = ""                      # optional: credentials of a MAIN-alliance nation (for main -> offshore)
-    main_bot_api_key: str = ""
+    main_bot_key: str = field(default="", repr=False)       # optional: credentials of a MAIN-alliance nation (for main -> offshore)
+    main_bot_api_key: str = field(default="", repr=False)
     offshore_nation_id: int | None = None
     alliance_receiver_type: int = 2             # PnW receiver_type for "an alliance" (1 = nation)
     members_intent: bool = False                 # ENABLE_MEMBERS_INTENT=1 (also switch it on in the Discord developer portal)
-    credential_key: str = ""                    # Fernet key that encrypts members' API keys (CREDENTIAL_ENCRYPTION_KEY)
+    credential_key: str = field(default="", repr=False)     # Fernet key that encrypts members' API keys (CREDENTIAL_ENCRYPTION_KEY)
 
     @property
     def main(self) -> BankAccess:

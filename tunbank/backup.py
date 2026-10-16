@@ -253,7 +253,7 @@ def verdict(old: Path, new: Path) -> dict:
         if not ok:
             reasons.append(f"{t}: the old history is NOT contained, unchanged, in the new database")
     for t in CONFIG_DIGESTS:
-        if a["digests"].get(t) != b["digests"].get(t):
+        if t in a["digests"] and a["digests"].get(t) != b["digests"].get(t):      # a table the old version did not have yet is not a difference
             reasons.append(f"{t}: settings/permissions differ")
     for g, tables in a["counts"].items():
         for t, n_old in tables.items():
