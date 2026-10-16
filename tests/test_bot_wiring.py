@@ -26,5 +26,33 @@ class TestBotWiring(unittest.TestCase):
             self.assertEqual(undefined, set(), f"{cls.name} uses attributes nothing defines: {sorted(undefined)}")
 
 
+class TestSecretsNeverPrint(unittest.TestCase):
+    """A failing test once printed live bank keys because the settings objects showed their secrets in repr()."""
+
+    def test_no_secret_appears_in_repr_str_or_format(self):
+        import os
+        import tempfile
+
+        from tunbank.config import BankAccess, load_settings
+        secrets = {"DISCORD_TOKEN": "tok-SECRET-111", "PNW_API_KEY": "pnwkey-SECRET-222", "PNW_BOT_KEY": "botkey-SECRET-333",
+                   "PNW_BOT_KEY_API_KEY": "botapi-SECRET-444", "OFFSHORE_API_KEY": "offapi-SECRET-555", "OFFSHORE_BOT_KEY": "offbot-SECRET-666",
+                   "MAIN_BOT_KEY": "mainbot-SECRET-777", "MAIN_BOT_API_KEY": "mainapi-SECRET-888", "CREDENTIAL_ENCRYPTION_KEY": "credkey-SECRET-999"}
+        env = {"OWNER_DISCORD_IDS": "1", "ALLIANCE_ID": "10", "OFFSHORE_ALLIANCE_ID": "20", "DATA_DIR": tempfile.mkdtemp(), **secrets}
+        import dotenv
+        saved, old_load = dict(os.environ), dotenv.load_dotenv
+        try:
+            dotenv.load_dotenv = lambda *a, **k: False
+            os.environ.clear()
+            os.environ.update(env)
+            s = load_settings()
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+            dotenv.load_dotenv = old_load
+        shown = " ".join([repr(s), str(s), f"{s}", repr(s.offshore), repr(s.main), repr(s.banks), repr(BankAccess("x", 1, "k1-SECRET", "k2-SECRET", "k3-SECRET"))])
+        for name, value in list(secrets.items()) + [("k1", "k1-SECRET"), ("k2", "k2-SECRET"), ("k3", "k3-SECRET")]:
+            self.assertNotIn(value, shown, f"{name} would be printed")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -332,6 +332,56 @@ class TestMigrationVerification(Base):
         self.assertFalse(v["compatible"])
         self.assertTrue(any("bank_config" in r for r in v["reasons"]))
 
+    def test_014_and_015_upgrade_a_populated_013_database_without_changing_anything(self):
+        """The real scenario: an existing, populated database at migration 013 is upgraded to 015."""
+        import shutil
+        import sqlite3
+
+        from tunbank import db as DBMOD
+        d = Path(tempfile.mkdtemp())
+        old = d / "m"
+        old.mkdir()
+        for f in sorted(DBMOD.MIGRATIONS_DIR.glob("0[01][0-9]_*.sql")):
+            if int(f.name[:3]) <= 13:
+                shutil.copy(f, old)
+        real = DBMOD.MIGRATIONS_DIR
+        DBMOD.MIGRATIONS_DIR = old
+        try:
+            db = DBMOD.Database(d / "t.db")
+            self.assertEqual(len(db.migrate()), 13)
+            with db.tx() as c:                                   # real-looking data: members, links, balances, a staff adjustment
+                for n, name, disc in ((1, "Alpha", "111"), (2, "Beta", "222")):
+                    L.ensure_member(c, n, name)
+                    c.execute("UPDATE members SET discord_id=? WHERE nation_id=?", (disc, n))
+                    aid = c.execute("INSERT INTO adjustments(nation_id,bucket,reason,evidence,actor,created_at) VALUES(?, 'AVAILABLE','seed','e','9','2026-10-01T00:00:00Z')", (n,)).lastrowid
+                    c.execute("INSERT INTO adjustment_items(adjustment_id,resource,delta) VALUES(?, 'money', 100000)", (aid,))
+                    L.post_entries(c, [dict(group_id=L.new_group("ADJ"), nation_id=n, bucket="AVAILABLE", resource="money", delta=100000,
+                                            entry_type="ADJUSTMENT", adjustment_id=aid, actor="9", note="seed")])
+                cfg_set(c, "dm_members", "0", "t")
+                c.execute("INSERT INTO bankers(discord_id,added_by,added_at) VALUES('55','x','x')")
+                L.audit(c, "9", "TEST", "x", {})
+        finally:
+            DBMOD.MIGRATIONS_DIR = real
+        before = d / "before.db"
+        db.backup_to(before)
+        self.assertEqual(db.migrate(backup_dir=d / "bk"), ["014_balance_transfers.sql", "015_external_withdrawals_notifications.sql"])
+        self.assertEqual(len(list((d / "bk").glob("pre-migration-*.db"))), 1)          # the automatic safety backup
+        after = d / "after.db"
+        db.backup_to(after)
+        v = BK.verdict(before, after)
+        self.assertTrue(v["compatible"], v["reasons"])
+        self.assertTrue(v["new"]["ledger_chain_ok"] and v["new"]["audit_chain_ok"])
+        self.assertEqual(v["new"]["balances_not_matching_ledger"], 0)
+        self.assertEqual(BK.history_preserved(before, after), {"ledger_entries": True, "audit_log": True, "config_audit": True})
+        with db.read() as c:
+            self.assertEqual(L.get_balances(c, 1, "AVAILABLE")["money"], 100000)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM external_withdrawals").fetchone()[0], 0)
+            self.assertFalse(cfg_bool(c, "dm_members"))                              # settings survived
+        with self.assertRaises(sqlite3.DatabaseError):
+            with db.tx() as c:
+                c.execute("INSERT INTO balance_transfers(idempotency_key,recipient_nation_id,source_type,reason,operator,group_id,created_at) "
+                          "VALUES('k',1,'ALLIANCE','','op','g','t')")                # the new CHECKs are live
+
     def test_an_unrelated_database_is_never_called_compatible(self):
         self.fund_alice({"money": 1000})
         old = self.backup("a.db")

@@ -13,6 +13,8 @@
 | **`/bankset resetconfig`** (Admin or server owner) | Resets **configuration only**: *Settings only* or *All configuration* (+ roles, bankers, limits, trade lists). Typed phrase + confirmation + automatic backup + previous values written to the audit log. Never touches members, links, API keys, balances, ledgers, transactions, loans, audit history or the emergency lock; if any protected record would change the whole reset is rolled back. |
 | **Icons** | `scripts/install_pnw_icons.py` + `/bankset iconpack` use the real PnW icons as application emojis, with automatic fallback to the defaults (guide 19). |
 | **Backups / migration** | `scripts/verify_database.py` proves a backup is healthy and that a copy on another Railway account holds the same data (guide 18). |
+| **Secrets can't be printed** | `Settings` and `BankAccess` hide every key/token from `repr()`/logs/error messages (a failing test once printed live offshore keys through exactly this). A test enforces it. |
+| **`scripts/rehearse_upgrade.py`** | Runs the upgrade on a COPY of your real backup and proves nothing changed. |
 | **Guild lock** | With `GUILD_ID` set, commands from any other Discord server are refused. |
 | **Start-up check** | `python scripts/check_startup.py` builds the real bot offline and validates every command with discord.py. |
 
@@ -29,12 +31,23 @@
 ## Environment variables
 **None added.** `requirements.txt`: `discord.py>=2.5` (needed for application emojis). Railway installs it automatically; locally run `pip install -r requirements.txt`.
 
-## Applying the update
-**Replace** everything in the project folder with the contents of the new zip (code, `docs/`, `scripts/`, `tests/`, `icons/`, `requirements.txt`).
-**Preserve (the zip contains none of these, so extracting over the folder cannot overwrite them):** `.env`, `data/` (the database `tunbank.db`, its backups), `.venv/`.
-Then: `pip install -r requirements.txt` → `python -m unittest discover -s tests` → `python scripts/check_startup.py` → commit/push → watch the Railway logs for `Database upgraded: 014_..., 015_...` and `Logged in as`.
-Finish in Discord: `/ledger dashboard` (state NORMAL, chains intact).
-The database in your **production Volume** is never touched by the zip; the new bot upgrades it itself on start-up, after backing it up.
+## Applying the update (in this order)
+0. **Rehearse on your real data.** `/bank lock` (pause withdrawals) → `/bankset backup` and save the file → `python scripts/rehearse_upgrade.py that_backup.db`. It must print `PASS`. Keep that backup file: it is your rollback.
+1. **Replace** everything in the project folder with the contents of the new zip (code, `docs/`, `scripts/`, `tests/`, `icons/`, `requirements.txt`).
+   **Preserve (the zip contains none of these, so extracting over the folder cannot overwrite them):** `.env`, `data/` (the database and its backups), `.venv/`, `.vscode/`.
+2. `pip install -r requirements.txt` → `python -m unittest discover -s tests` → `python scripts/check_startup.py`.
+3. Commit/push. Watch the Railway log for `Pre-migration backup written` → `Applied migration 014…`, `015…` → `Logged in as`.
+4. `/ledger dashboard` (state NORMAL, chains intact) → `/bank unlock`.
+The production database in your Railway Volume is never touched by the zip; the new bot upgrades it itself on start-up, after backing it up.
+
+## Rollback (exact)
+* **Each migration file is all-or-nothing** (proved with a deliberately broken migration: nothing left behind). A `pre-migration-<time>.db` is written to `/data/backups` *before* the first one.
+* **A migration fails at start-up:** the bot refuses to start and the log says `Migration 0NN … failed and was rolled back`. Your data is intact at the last migration that succeeded. If NO migration succeeded (the log shows no `Applied migration`), Railway → Deployments → redeploy the previous deployment. If 014 succeeded and 015 failed, the old code will refuse the database (it never runs old code on a newer database), so **fix forward**: send me the log line.
+* **It started but you want the old version back:** the old code refuses a 014/015 database. Restore the pre-update data first:
+  1. Get a shell on the service's Volume (Railway CLI) and copy `/data/backups/pre-migration-<time>.db` to `/data/restore_pending.db`. On the next start the bot validates it, saves the current database as `pre-restore-….db`, and swaps it in.
+  2. Redeploy the previous code.
+  *No-shell alternative:* start the OLD code on a new, empty Volume, run `/bankset restorestage` with the backup you saved in step 0, restart.
+  Anything that happened after the backup (new deposits/withdrawals) is not in it: deposits are re-detected from PnW; later withdrawals show up for review (see guide 6).
 
 ## Things to know / limitations
 * **Multi-alliance support is NOT implemented.** See guide 20 for the assessment, options and plan, and the decisions I need.
