@@ -35,7 +35,8 @@ G_PRICE = "Market prices"
 G_TRADE = "Trade monitor"
 G_SYS = "Backups & scanning"
 G_ICONS = "Resource icons"
-GROUPS = [G_ALERTS, G_MEMBERS, G_SAFETY, G_EXT, G_OFF, G_LOANS, G_PRICE, G_TRADE, G_SYS, G_ICONS]
+G_GRANTS = "Grants & transfers"
+GROUPS = [G_ALERTS, G_MEMBERS, G_SAFETY, G_EXT, G_OFF, G_LOANS, G_GRANTS, G_PRICE, G_TRADE, G_SYS, G_ICONS]
 
 LEVELS = {"BANKER": "Banker and above", "MINISTER": "Minister and above", "ADMIN": "Admins only"}
 
@@ -91,6 +92,17 @@ SETTINGS: dict = {
     "grant_min_level": S(G_LOANS, "Who may give grants", "choice", "Lowest staff level that may give a grant", choices=LEVELS),
     "excess_per_city": S(G_LOANS, "Most to keep per city", "amounts", "Most a nation should keep per city; limit = amount × cities", example="money=5m food=10k"),
     "excess_holdings": S(G_LOANS, "Old fixed limits", "hidden", "Legacy, unused"),
+    # --- grants & transfers
+    "warchest_per_city": S(G_GRANTS, "Warchest per city", "amounts", "What /grant warchest gives per city at ratio 1", example="food=1000 steel=100 aluminum=100"),
+    "grant_infra_target": S(G_GRANTS, "Infrastructure grant target", "count", "Every city is raised to this infrastructure level", zero="Not set"),
+    "grant_land_target": S(G_GRANTS, "Land grant target", "count", "Every city is raised to this many acres", zero="Not set"),
+    "grant_infra_max_usd": S(G_GRANTS, "Infrastructure grant cap", "usd", "Largest infrastructure grant to one nation", zero="No cap"),
+    "grant_land_max_usd": S(G_GRANTS, "Land grant cap", "usd", "Largest land grant to one nation", zero="No cap"),
+    "grant_city_max_usd": S(G_GRANTS, "City grant cap", "usd", "Largest city grant to one nation", zero="No cap"),
+    "daily_cash_threshold": S(G_GRANTS, "Daily-bonus cash threshold", "usd", "Used by the no_daily_cash option of /transfer raws", zero="Not set"),
+    "disburse_live_kinds": S(G_GRANTS, "Disbursements allowed to send", "words", "Empty = previews only. Change with /grantset live"),
+    "disburse_ignore_tag": S(G_GRANTS, "Mark alliance-funded transfers as donations", "toggle", "Adds the donation note so they are not treated as a member's deposit"),
+    "disburse_max_nations": S(G_GRANTS, "Most nations per command", "count", "Safety limit for one /transfer or /grant command"),
     # --- prices
     "price_ttl_seconds": S(G_PRICE, "Price cache time", "secs", "How long market prices are cached"),
     "price_stale_seconds": S(G_PRICE, "Prices considered stale after", "secs", "Older prices are flagged STALE"),

@@ -583,7 +583,7 @@ def register(bank: app_commands.Group, bankset: app_commands.Group, ledger_grp: 
     # ----------------------------------------------------- confidential-information access
     FLAG_CHOICES = [app_commands.Choice(name=f, value=f) for f in perms.FLAGS]
 
-    @bankset.command(name="setaccess", description="Admin: choose which roles may see confidential alliance information")
+    @bankset.command(name="setaccess", description="Admin: give a role a special permission (confidential info, spending members' funds)")
     @app_commands.describe(permission="Which confidential permission", role="The Discord role", remove="Remove instead of add")
     @app_commands.choices(permission=FLAG_CHOICES)
     async def setaccess(interaction: discord.Interaction, permission: app_commands.Choice[str], role: discord.Role, remove: bool = False):

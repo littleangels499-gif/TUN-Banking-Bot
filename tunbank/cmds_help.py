@@ -15,7 +15,8 @@ from .ui import Services, levels, reply
 
 # ---- level badges
 BADGE = {"ALL": "", "AUDITOR": "👁️ Auditor", "BANKER": "🏦 Banker", "MINISTER": "🛡️ Minister", "ADMIN": "👑 Admin",
-         "FLAG:bank_view_alliance_holdings": "🔒 Treasury access", "FLAG:bank_view_tax": "🔒 Tax access"}
+         "FLAG:bank_view_alliance_holdings": "🔒 Treasury access", "FLAG:bank_view_tax": "🔒 Tax access",
+         "FLAG:disburse_member_available": "🔒 Spend members' balances", "FLAG:disburse_member_locked": "🔒 Spend members' locked funds"}
 
 # ---- categories: key -> (button label, emoji, blurb)
 CATEGORIES = {
@@ -23,6 +24,7 @@ CATEGORIES = {
     "account": ("My account", "🏦", "Everything you do with your own deposit."),
     "banking": ("Banking", "💸", "Day-to-day work for ECON staff: sending, reserving, correcting and reviewing."),
     "bulk": ("Bulk transfers", "📦", "Pay many nations at once from alliance-owned funds. Every row is checked first and never sent twice."),
+    "disburse": ("Transfers & grants", "🎁", "Raws and grants calculated from each nation's real data. The funding source is always shown first."),
     "shared": ("Shared offshore", "🏝️", "One physical offshore, several alliances' shares. Each alliance sees only its own."),
     "trade": ("Trade monitoring", "🔎", "Alerts when a member's trade breaks a rule. Nothing is punished automatically."),
     "loans": ("Loans", "🤝", "Money members owe the alliance. Kept separate from deposits."),
@@ -48,12 +50,18 @@ CATALOG = {
     "bank offshore": ("banking", "BANKER"), "bank linknation": ("banking", "MINISTER"),
     "grant send": ("banking", "MINISTER"), "grant list": ("banking", "AUDITOR"), "grant view": ("banking", "AUDITOR"),
     # bulk
+    "transfer raws": ("disburse", "MINISTER"), "grant warchest": ("disburse", "MINISTER"), "grant city": ("disburse", "MINISTER"),
+    "grant infrastructure": ("disburse", "MINISTER"), "grant land": ("disburse", "MINISTER"),
+    "grantset show": ("disburse", "AUDITOR"), "grantset warchest": ("disburse", "MINISTER"), "grantset infra": ("disburse", "MINISTER"),
+    "grantset land": ("disburse", "MINISTER"), "grantset citycap": ("disburse", "MINISTER"), "grantset dailycash": ("disburse", "MINISTER"),
+    "grantset rules": ("disburse", "MINISTER"), "grantset live": ("disburse", "ADMIN"), "grantset batch": ("disburse", "AUDITOR"),
+    "grantset resume": ("disburse", "BANKER"),
     "bulk template": ("bulk", "BANKER"), "bulk send": ("bulk", "BANKER"), "bulk resume": ("bulk", "BANKER"),
     "bulk status": ("bulk", "AUDITOR"),
     # shared offshore
     "offshore status": ("shared", "ALL"), "offshore account": ("shared", "ALL"), "offshore history": ("shared", "ALL"),
     "offshore registry": ("shared", "AUDITOR"), "offshore enable": ("shared", "ADMIN"), "offshore assign": ("shared", "ADMIN"),
-    "offshore reassign": ("shared", "ADMIN"), "offshore adjustownership": ("shared", "ADMIN"), "offshore release": ("shared", "ADMIN"), "offshore send": ("shared", "ADMIN"),
+    "offshore reassign": ("shared", "ADMIN"), "offshore adjustownership": ("shared", "ADMIN"), "offshore release": ("shared", "ADMIN"), "offshore wipe": ("shared", "ADMIN"), "offshore send": ("shared", "ADMIN"),
     "offshore attribute": ("shared", "ADMIN"),
     # trade monitoring
     "trade alerts": ("trade", "AUDITOR"), "trade alert": ("trade", "AUDITOR"), "trade status": ("trade", "AUDITOR"),

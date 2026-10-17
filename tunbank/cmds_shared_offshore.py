@@ -426,6 +426,66 @@ def register(off_grp: app_commands.Group, svc: Services):
             return await reply(interaction, f"Not done: {exc}")
         await reply(interaction, f"Released {bal_text(parsed)} from **{a['name']}**.")
 
+    @off_grp.command(name="wipe", description="Admin: clear EVERY alliance's offshore share so you can assign them again (history is kept)")
+    @app_commands.describe(scope="Which shares to clear", reason="Why (kept permanently)", confirm_phrase=f"Type {OL.WIPE_PHRASE} to confirm you understand")
+    @app_commands.choices(scope=[app_commands.Choice(name="Every alliance, including this alliance's own share", value="all"),
+                                 app_commands.Choice(name="Every OTHER alliance (keep this alliance's own share)", value="others")])
+    async def wipe(interaction: discord.Interaction, scope: app_commands.Choice[str], reason: str, confirm_phrase: str):
+        if not await need(svc, interaction, "ADMIN"):
+            return
+        if confirm_phrase.strip() != OL.WIPE_PHRASE:
+            return await reply(interaction, f"Nothing was changed. To clear the shares, type exactly `{OL.WIPE_PHRASE}` in the confirm_phrase box.")
+        if not reason.strip():
+            return await reply(interaction, "A reason is mandatory.")
+        await thinking(interaction)
+        include_host = scope.value == "all"
+        with svc.db.read() as conn:
+            if not OL.shared_enabled(conn):
+                return await reply(interaction, "The offshore is not in shared mode, so there are no alliance shares to clear.")
+            shares = [(a, OL.balances(conn, a["alliance_id"])) for a in OL.alliances(conn, active_only=False)
+                      if (include_host or not a["is_host"])]
+        shares = [(a, b) for a, b in shares if b]
+        if not shares:
+            return await reply(interaction, "No alliance has a share assigned, so there is nothing to clear.")
+        c = A.Card("Confirm: clear the offshore assignments", "Every share listed below goes back to zero. The money stays in the offshore, "
+                   "unassigned, until you assign it again.", A.RED)
+        for a, b in shares[:10]:
+            c.add(f"{a['name']} [#{a['alliance_id']}]" + (" · this alliance" if a["is_host"] else ""), bal_text(b))
+        if len(shares) > 10:
+            c.add("…", f"and {len(shares) - 10} more alliance(s)")
+        c.add("What does NOT change", "The funds in the offshore · every member's balance · PnW (nothing is sent) · the history: reversing entries are "
+                                      "added, nothing is deleted or rewritten.")
+        c.add("Afterwards", "Assign the funds again with `/offshore assign`, `/offshore adjustownership` or `/offshore reassign`. The previous "
+                            "amounts are attached and kept in the audit log.")
+        c.add("Reason", reason[:300])
+        if not await confirm(svc, interaction, c):
+            return await reply(interaction, "Cancelled. Nothing was changed.")
+        import datetime as dt
+        import io
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+        try:
+            await asyncio.to_thread(svc.db.backup_to, svc.settings.backup_dir / f"pre-offshore-wipe-{stamp}.db")
+        except Exception as exc:  # noqa: BLE001
+            log.exception("backup before the offshore wipe failed")
+            return await reply(interaction, f"Nothing was changed: the safety backup failed ({exc}).")
+
+        def do():
+            with svc.db.tx() as conn:
+                return OL.wipe_assignments(conn, actor=uid(interaction), reason=reason, include_host=include_host)
+        try:
+            res = await asyncio.to_thread(do)
+        except L.LedgerError as exc:
+            return await reply(interaction, f"Not done: {exc}")
+        lines = [f"{p['name']} [#{aid}]{' (this alliance)' if p['is_host'] else ''}: " + bal_text(p["amounts"]) for aid, p in res["previous"].items()]
+        out = A.Card("Offshore assignments cleared", f"By {interaction.user.mention} · {reason[:200]}", A.ORANGE, kind="OFFSHORE")
+        out.add("Cleared", f"{res['cleared']} alliance share(s)", True)
+        out.add("Safety backup", f"`pre-offshore-wipe-{stamp}.db`", True)
+        out.add("Now", "All offshore funds are unassigned. Assign them again with `/offshore assign`.")
+        await interaction.followup.send(embed=A.to_embed(out), ephemeral=True,
+                                        file=discord.File(io.BytesIO(("Previous offshore assignments (before the wipe)\n\n" + "\n".join(lines)).encode()),
+                                                          filename=f"offshore-assignments-before-wipe-{stamp}.txt"))
+        await svc.alerts.econ(out)
+
     # ------------------------------------------------------------------ paying out for an alliance (Admin)
     @off_grp.command(name="send", description="Admin: send funds OUT of the offshore for a registered alliance (reduces that alliance's share)")
     @app_commands.describe(alliance="Whose share the money comes from", destination="Receiving nation id (or alliance id with destination_type)",

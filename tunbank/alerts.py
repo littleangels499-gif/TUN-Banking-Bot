@@ -42,23 +42,77 @@ class Card:
         return "\n".join(p for p in parts if p)
 
 
+# Discord rejects (HTTP 400, error 50035) an embed whose TOTAL text is over 6000 characters, however each part is capped. A big
+# vault / holdings card does exceed it, so cards are split across messages instead of failing.
+EMBED_BUDGET = 5600          # under Discord's 6000 total, leaving headroom for the footer and rounding
+MAX_FIELDS = 24
+
+
+def _field_size(f) -> int:
+    return len(f[0]) + len(f[1])
+
+
+def card_chars(card: Card) -> int:
+    return len(card.title[:250]) + len(card.description[:3500]) + len(card.footer or "TUN Bank") + sum(_field_size(f) for f in card.fields)
+
+
+def split_card(card: Card, budget: int | None = None) -> list:
+    """The card as one or more cards that each fit in a single Discord message. Nothing is dropped; order is kept."""
+    budget = budget or EMBED_BUDGET
+    if card_chars(card) <= budget and len(card.fields) <= MAX_FIELDS:
+        return [card]
+    import dataclasses
+
+    chunks, cur = [], []
+    size = len(card.title[:250]) + len(card.description[:3500]) + 60
+    for f in card.fields:
+        if cur and (size + _field_size(f) > budget or len(cur) >= MAX_FIELDS):
+            chunks.append(cur)
+            cur, size = [], len(card.title[:230]) + 80
+        cur.append(f)
+        size += _field_size(f)
+    if cur or not chunks:
+        chunks.append(cur)
+    out = []
+    for i, fields in enumerate(chunks, start=1):
+        out.append(dataclasses.replace(
+            card, fields=list(fields), title=card.title if i == 1 else f"{card.title[:230]} (continued)",
+            description=card.description if i == 1 else "", footer=f"{card.footer or 'TUN Bank'} · part {i} of {len(chunks)}"))
+    return out
+
+
 def to_embed(card: Card):
+    """A valid Discord embed, ALWAYS. If the card is too big for one message this returns its first part (callers that can send
+    several messages use split_card / send_card / ui.reply so nothing is lost)."""
     import discord
 
     import datetime as dt
 
-    e = discord.Embed(title=card.title[:250], description=card.description[:3500], color=card.color)
-    for n, v, i in card.fields[:24]:
+    parts = split_card(card)
+    shown = parts[0]
+    e = discord.Embed(title=shown.title[:250], description=shown.description[:3500], color=shown.color)
+    for n, v, i in shown.fields[:MAX_FIELDS]:
         e.add_field(name=n, value=v, inline=i)
-    if card.image:
-        e.set_image(url=card.image)
-    foot = card.footer or "TUN Bank"
+    if shown.image:
+        e.set_image(url=shown.image)
+    foot = shown.footer or "TUN Bank"
+    if len(parts) > 1 and "part 1 of" not in foot:
+        foot = f"{foot} · part 1 of {len(parts)} (run the command again for the rest)"
     try:
         e.set_footer(text=foot[:200])
         e.timestamp = dt.datetime.now(dt.timezone.utc)
     except AttributeError:  # test doubles
         pass
     return e
+
+
+async def send_card(dest, card: Card, **kw):
+    """Send a card to a channel or user, as several messages if it is too big for one. Returns the first message."""
+    first = None
+    for part in split_card(card):
+        msg = await dest.send(embed=to_embed(part), **kw)
+        first = first or msg
+    return first
 
 
 def _who(nation_id, name=None):
@@ -324,7 +378,7 @@ class AlertService:
             return False
         try:
             ch = self.bot.get_channel(int(chan)) or await self.bot.fetch_channel(int(chan))
-            await ch.send(embed=to_embed(card))
+            await send_card(ch, card)
             return True
         except Exception as exc:  # noqa: BLE001
             log.warning("config audit post failed: %s", exc)
@@ -363,7 +417,7 @@ class AlertService:
             return
         try:
             ch = self.bot.get_channel(int(chan_id)) or await self.bot.fetch_channel(int(chan_id))
-            await ch.send(embed=to_embed(card))
+            await send_card(ch, card)
             self._log(card, f"econ:{chan_id}", True)
         except Exception as exc:  # noqa: BLE001
             self._log(card, f"econ:{chan_id}", False, str(exc)[:200])
@@ -377,7 +431,7 @@ class AlertService:
             return
         try:
             user = self.bot.get_user(int(discord_id)) or await self.bot.fetch_user(int(discord_id))
-            await user.send(embed=to_embed(card))
+            await send_card(user, card)
             self._log(card, f"dm:{discord_id}", True)
         except Exception as exc:  # noqa: BLE001
             self._log(card, f"dm:{discord_id}", False, str(exc)[:200])
@@ -405,7 +459,7 @@ class AlertService:
                     try:
                         card = member_event_card(json.loads(r["payload_json"]))
                         user = self.bot.get_user(int(r["discord_id"])) or await self.bot.fetch_user(int(r["discord_id"]))
-                        await user.send(embed=to_embed(card))
+                        await send_card(user, card)
                     except Exception as exc:  # noqa: BLE001
                         status, err = "FAILED", f"{type(exc).__name__}: {exc}"
                         log.warning("member DM %s (nation %s) not delivered: %s", r["id"], r["nation_id"], err)

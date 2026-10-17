@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_convert, cmds_deposit, cmds_grant, cmds_loan, cmds_panel, cmds_shared_offshore, cmds_trade, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
+from . import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_convert, cmds_deposit, cmds_disburse, cmds_grant, cmds_loan, cmds_panel, cmds_shared_offshore, cmds_trade, cmds_offshore, cmds_econ, cmds_help, cmds_market, cmds_member
 from . import ledger as L
 from .alerts import AlertService
 from .credentials import Crypto
@@ -68,6 +68,8 @@ class TunBankBot(commands.Bot):
         loan = app_commands.Group(name="loan", description="Loans: money members owe the alliance")
         trade = app_commands.Group(name="trade", description="Trade monitoring: alerts and rules (ECON)")
         offshore_grp = app_commands.Group(name="offshore", description="Shared offshore: who owns what in it")
+        transfer = app_commands.Group(name="transfer", description="Resource transfers calculated from each nation's data (ECON)")
+        grantset = app_commands.Group(name="grantset", description="Grant and transfer settings (ECON)")
         cmds_member.register(bank, nation, self.svc)
         cmds_econ.register(bank, self.svc)            # must come first: defines svc.do_reconcile
         cmds_admin.register(bank, bankset, ledger, self.svc)
@@ -75,6 +77,7 @@ class TunBankBot(commands.Bot):
         cmds_chart.register(chart, self.svc)
         cmds_bulk.register(bulk, self.svc)
         cmds_grant.register(grant, self.svc)
+        cmds_disburse.register(grant, transfer, grantset, self.svc)
         cmds_offshore.register(bank, self.svc)
         cmds_help.register(self.tree, self.svc)
         cmds_market.register(self.tree, self.svc)
@@ -100,7 +103,7 @@ class TunBankBot(commands.Bot):
                 pass
             return False
         self.tree.interaction_check = guild_lock
-        for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit, loan, trade, offshore_grp):
+        for g in (bank, bankset, nation, tax, audit, ledger, chart, bulk, grant, deposit, loan, trade, offshore_grp, transfer, grantset):
             self.tree.add_command(g)
         if self.settings.guild_id:
             guild = discord.Object(id=self.settings.guild_id)

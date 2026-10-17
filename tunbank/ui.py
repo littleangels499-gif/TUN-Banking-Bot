@@ -151,16 +151,21 @@ async def reply(interaction: discord.Interaction, content: str | None = None, ca
     kw = {"ephemeral": ephemeral}
     if content:
         kw["content"] = content[:1900]
-    if card:
-        kw["embed"] = A.to_embed(card)
+    parts = A.split_card(card) if card else []
+    if parts:
+        kw["embed"] = A.to_embed(parts[0])
     if file:
         kw["file"] = file
     if view:
         kw["view"] = view
     if interaction.response.is_done():
-        return await interaction.followup.send(**kw)
-    await interaction.response.send_message(**kw)
-    return await interaction.original_response()
+        first = await interaction.followup.send(**kw)
+    else:
+        await interaction.response.send_message(**kw)
+        first = await interaction.original_response()
+    for extra in parts[1:]:                         # a card too big for one Discord message continues in the next ones
+        await interaction.followup.send(embed=A.to_embed(extra), ephemeral=ephemeral)
+    return first
 
 
 def xlsx_file(data: bytes, name: str) -> discord.File:
@@ -215,7 +220,10 @@ async def confirm(svc: Services, interaction: discord.Interaction, card: A.Card)
         seconds = max(15, cfg_int(conn, "confirm_timeout_seconds"))
     card.add("Expires", f"This confirmation expires in {seconds} seconds.")
     view = ConfirmView(interaction.user.id, seconds)
-    msg = await interaction.followup.send(embed=A.to_embed(card), view=view, ephemeral=True, wait=True)
+    parts = A.split_card(card)
+    for extra in parts[:-1]:                        # never ask for confirmation of something that was cut off: show every part first
+        await interaction.followup.send(embed=A.to_embed(extra), ephemeral=True)
+    msg = await interaction.followup.send(embed=A.to_embed(parts[-1]), view=view, ephemeral=True, wait=True)
     await view.wait()
     if view.value is None:
         view._disable()

@@ -18,6 +18,8 @@ ORDER = {"AUDITOR": 1, "BANKER": 2, "MINISTER": 3, "ADMIN": 4}
 FLAGS = {
     "bank_view_alliance_holdings": "See the real bank contents (main + offshore), alliance-owned funds, the vault and its charts/exports",
     "bank_view_tax": "See alliance tax collections: dashboards, reports, brackets, profiles and exports",
+    "disburse_member_available": "Pay /transfer raws and /grant transfers out of a MEMBER's available balance (ECON staff do not have this automatically)",
+    "disburse_member_locked": "Pay /transfer raws and /grant transfers out of a MEMBER's locked funds (also needs the locked-withdraw setting on)",
 }
 FLAG_PREFIX = "FLAG:"
 # AUDITOR is read-only and sits beside the chain, not above BANKER: an auditor cannot move money.

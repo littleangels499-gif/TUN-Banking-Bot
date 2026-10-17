@@ -311,6 +311,54 @@ def release(conn, *, alliance_id: int, amounts: dict, actor: str, note: str) -> 
     L.audit(conn, actor, "OFFSHORE_RELEASED", f"alliance:{alliance_id}", {"amounts": amounts, "note": note})
 
 
+WIPE_PHRASE = "WIPE OFFSHORE ASSIGNMENTS"
+
+
+def wipe_assignments(conn, *, actor: str, reason: str, include_host: bool) -> dict:
+    """Clear every alliance's recorded share of the offshore so the funds can be assigned again from scratch.
+
+    NOTHING IS DELETED OR REWRITTEN. Each share is brought to zero with reversing ADJUSTMENT entries (all in one group, so the
+    wipe is one identifiable event), exactly like /offshore release does for one alliance. The funds stay in the offshore and
+    simply become "unassigned". Member balances, PnW and every other record are untouched. ALL-OR-NOTHING: it refuses while
+    anything is in flight, and checks the result before it commits (the caller's transaction rolls back on any error).
+    """
+    if not (reason or "").strip():
+        raise OffshoreError("A reason is required.")
+    if not shared_enabled(conn):
+        raise OffshoreError("The offshore is not in shared mode, so there are no alliance shares to clear.")
+    L.assert_can_mutate(conn, None, "adjust")
+    targets = []
+    for a in alliances(conn, active_only=False):
+        if a["is_host"] and not include_host:
+            continue
+        bal = balances(conn, a["alliance_id"])
+        if bal:
+            targets.append((a, bal))
+    if not targets:
+        raise OffshoreError("No alliance has a share assigned, so there is nothing to clear.")
+    stuck = [a["name"] for a, _ in targets if held(conn, a["alliance_id"])]
+    if stuck:
+        raise OffshoreError("Payouts are still planned or in flight for: " + ", ".join(stuck) + ". Wait for them to finish, or resolve them, first.")
+    busy_tx = conn.execute("SELECT COUNT(*) FROM transactions WHERE status IN ('CONFIRMED','RECONCILIATION_REQUIRED')").fetchone()[0]
+    busy_off = conn.execute("SELECT COUNT(*) FROM offshore_transfers WHERE status IN ('PLANNED','PENDING','UNCERTAIN')").fetchone()[0]
+    if busy_tx or busy_off:
+        raise OffshoreError(f"{busy_tx} withdrawal(s) and {busy_off} offshore transfer(s) are still in flight. "
+                            "Clearing shares now could leave one of them unable to debit its share; wait until they finish.")
+    g = L.new_group("OFFS")
+    note = f"ASSIGNMENT WIPE: {reason.strip()}"
+    post(conn, [dict(group_id=g, alliance_id=a["alliance_id"], resource=r, delta=-amt, entry_type="ADJUSTMENT", actor=actor, note=note)
+                for a, bal in targets for r, amt in bal.items()])
+    for a, _ in targets:                                    # verify before committing: every share is exactly zero
+        if balances(conn, a["alliance_id"]):
+            raise OffshoreError(f"Safety stop: {a['name']}'s share is not zero after the wipe. Nothing was changed.")
+    if not cache_matches(conn):
+        raise OffshoreError("Safety stop: stored shares do not match their ledger entries after the wipe. Nothing was changed.")
+    previous = {str(a["alliance_id"]): {"name": a["name"], "is_host": bool(a["is_host"]), "amounts": bal} for a, bal in targets}
+    L.audit(conn, actor, "OFFSHORE_ASSIGNMENTS_WIPED", "offshore", {"group_id": g, "reason": reason.strip(), "include_host": include_host,
+                                                                   "previous": previous})
+    return {"group_id": g, "previous": previous, "cleared": len(targets)}
+
+
 def credit_record(conn, n: dict, *, alliance_id: int, actor: str) -> dict:
     """A real PnW deposit into the offshore -> that alliance's share goes up (once per record)."""
     g = L.new_group("OFFS")

@@ -38,6 +38,21 @@ class PnWUncertain(PnWError):
     """We cannot tell whether the request took effect."""
 
 
+# --- fields requested when calculating transfers and grants. Written from the author's knowledge of the PnW v3 schema and NOT
+# --- verified against the live API: run `python scripts/check_pnw_schema.py` to confirm every one of them exists before relying on it.
+NATION_SCALAR_FIELDS = ("id", "nation_name", "alliance_id", "num_cities", "population", "domestic_policy",
+                        "soldiers", "tanks", "aircraft", "ships", "missiles", "nukes", "spies",
+                        "money", "coal", "oil", "uranium", "iron", "bauxite", "lead", "gasoline", "munitions", "steel", "aluminum", "food")
+NATION_PROJECT_FIELDS = ("urban_planning", "advanced_urban_planning", "metropolitan_planning",
+                         "center_for_civil_engineering", "advanced_engineering_corps")
+CITY_FIELDS = ("id", "infrastructure", "land", "coal_power", "oil_power", "nuclear_power", "wind_power", "coal_mine", "oil_well",
+               "uranium_mine", "iron_mine", "bauxite_mine", "lead_mine", "farm", "police_station", "hospital", "recycling_center",
+               "subway", "supermarket", "bank", "shopping_mall", "stadium", "oil_refinery", "aluminum_refinery", "steel_mill",
+               "munitions_factory", "barracks", "factory", "hangar", "drydock")
+MILITARY_FIELDS = ("soldiers", "tanks", "aircraft", "ships", "missiles", "nukes", "spies")
+RESOURCE_FIELDS = ("money", "coal", "oil", "uranium", "iron", "bauxite", "lead", "gasoline", "munitions", "steel", "aluminum", "food")
+
+
 class PnWClient:
     def __init__(self, settings, min_interval: float = 0.6, timeout: float = 25.0):
         self.s = settings
@@ -329,6 +344,39 @@ class PnWClient:
                 continue
             out[int(n["id"])] = n.get("nation_name") or ""
             _identity.remember(n["id"], n.get("nation_name"), self.s.alliance_id)
+        return out
+
+    async def fetch_nations_detail(self, nation_ids) -> dict:
+        """{nation_id: detail} with current city, building, military, project and stockpile data, for calculating transfers and grants.
+
+        A value PnW did not give is None (never 0), so a calculation can tell "unknown" from "none" and flag the nation for review.
+        Nations PnW does not return are simply absent from the result. Raises PnWRejected/PnWUncertain like every other read.
+        """
+        ids = sorted({int(i) for i in nation_ids})
+        out: dict = {}
+        fields = " ".join(NATION_SCALAR_FIELDS + NATION_PROJECT_FIELDS)
+        q = ("query($id:[Int],$first:Int){ nations(id:$id, first:$first){ data{ " + fields
+             + " cities{ " + " ".join(CITY_FIELDS) + " } } } }")
+        for i in range(0, len(ids), 20):                      # small pages keep each PnW query light
+            chunk = ids[i:i + 20]
+            data = await self.query(q, {"id": chunk, "first": len(chunk)})
+            for n in (data.get("nations", {}) or {}).get("data") or []:
+                nid = int(n["id"])
+                stock = {r: n.get(r) for r in RESOURCE_FIELDS}
+                cities = []
+                for c in n.get("cities") or []:
+                    b = {k: c.get(k) for k in CITY_FIELDS if k not in ("id", "infrastructure", "land")}
+                    cities.append({"id": c.get("id"), "infrastructure": c.get("infrastructure"), "land": c.get("land"),
+                                   "buildings": None if any(v is None for v in b.values()) else {k: int(v) for k, v in b.items()}})
+                out[nid] = {
+                    "id": nid, "name": n.get("nation_name") or "", "alliance_id": n.get("alliance_id"),
+                    "num_cities": n.get("num_cities"), "population": n.get("population"), "policy": n.get("domestic_policy"),
+                    "military": {k: n.get(k) for k in MILITARY_FIELDS},
+                    "stock": None if any(v is None for v in stock.values()) else stock,
+                    "projects": {k: n.get(k) for k in NATION_PROJECT_FIELDS},
+                    "cities": cities,
+                }
+                _identity.remember(nid, n.get("nation_name"), n.get("alliance_id"))
         return out
 
     async def fetch_alliance_discords(self) -> list[dict]:
