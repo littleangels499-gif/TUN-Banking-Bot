@@ -278,6 +278,27 @@ class FakeMessage:
         pass
 
 
+def check_embed(embed) -> None:
+    """Reject exactly what Discord rejects (HTTP 400, error 50035), so an oversized card fails a test instead of failing live."""
+    import discord
+    if embed is None:
+        return
+    total = len(embed.title or "") + len(embed.description or "") + len(getattr(embed, "footer_text", "") or "")
+    if len(embed.title or "") > 256:
+        raise discord.HTTPException("Embed title exceeds 256")
+    if len(embed.description or "") > 4096:
+        raise discord.HTTPException("Embed description exceeds 4096")
+    if len(embed.fields) > 25:
+        raise discord.HTTPException("Embed has more than 25 fields")
+    for n, v, _ in embed.fields:
+        if len(n) > 256 or len(str(v)) > 1024 or not n or not str(v):
+            raise discord.HTTPException("Embed field name/value out of range")
+        total += len(n) + len(str(v))
+    if total > 6000:
+        raise discord.HTTPException(f"In embeds: Embed size exceeds maximum size of 6000 (was {total})")
+
+
+
 class FakeInteraction:
     _next = 1000
 
@@ -302,10 +323,12 @@ class FakeInteraction:
             self._done = True
 
         async def send_message(self, content=None, **kw):
+            check_embed(kw.get("embed"))
             self._done = True
             self.i.sent.append({"content": content, **kw})
 
         async def edit_message(self, **kw):
+            check_embed(kw.get("embed"))
             self.i.edited = kw
 
         async def send_modal(self, modal):
@@ -317,6 +340,7 @@ class FakeInteraction:
             self.i = i
 
         async def send(self, content=None, **kw):
+            check_embed(kw.get("embed"))
             self.i.sent.append({"content": content, **kw})
             view = kw.get("view")
             if view is not None and self.i.press and hasattr(view, 'confirm'):
@@ -333,6 +357,7 @@ class FakeInteraction:
         return FakeMessage()
 
     async def edit_original_response(self, **kw):
+        check_embed(kw.get("embed"))
         self.edited = kw
 
     # --- test helpers: press a button / submit a form

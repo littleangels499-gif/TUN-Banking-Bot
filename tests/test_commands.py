@@ -22,7 +22,7 @@ import discord  # noqa: E402
 from discord import app_commands  # noqa: E402
 
 from test_core import ALLIANCE, PRICES, FakePnW, rec  # noqa: E402
-from tunbank import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_econ, cmds_grant, cmds_help, cmds_market, cmds_member, cmds_offshore  # noqa: E402
+from tunbank import cmds_admin, cmds_audit, cmds_backup, cmds_bulk, cmds_chart, cmds_disburse, cmds_econ, cmds_grant, cmds_help, cmds_market, cmds_member, cmds_offshore  # noqa: E402
 from tunbank import ledger as L  # noqa: E402
 from tunbank import reconcile as R  # noqa: E402
 from tunbank import money as M  # noqa: E402
@@ -74,6 +74,8 @@ class Cmd(unittest.TestCase):
         self.chart = app_commands.Group("chart")
         self.bulk = app_commands.Group("bulk")
         self.grant = app_commands.Group("grant")
+        self.xfer = app_commands.Group("transfer")
+        self.grantset = app_commands.Group("grantset")
         cmds_member.register(self.bank, self.nation, self.svc)
         cmds_econ.register(self.bank, self.svc)
         cmds_admin.register(self.bank, self.bankset, self.ledger, self.svc)
@@ -81,6 +83,7 @@ class Cmd(unittest.TestCase):
         cmds_chart.register(self.chart, self.svc)
         cmds_bulk.register(self.bulk, self.svc)
         cmds_grant.register(self.grant, self.svc)
+        cmds_disburse.register(self.grant, self.xfer, self.grantset, self.svc)
         cmds_offshore.register(self.bank, self.svc)
         cmds_audit.register_tax(self.tax, self.svc)
         cmds_audit.register_audit(self.audit, self.ledger, self.svc)
@@ -901,7 +904,7 @@ class Cmd(unittest.TestCase):
         from tunbank import bot as botmod
         b = botmod.TunBankBot(self.settings, self.db)
         self.run_async(b.setup_hook())
-        self.assertEqual(sorted(b.tree.cmds), ["audit", "bank", "bankset", "bulk", "chart", "deposit", "grant", "ledger", "loan", "nation", "offshore", "tax", "trade"])
+        self.assertEqual(sorted(b.tree.cmds), ["audit", "bank", "bankset", "bulk", "chart", "deposit", "grant", "grantset", "ledger", "loan", "nation", "offshore", "tax", "trade", "transfer"])
 
 
 class OffshoreCmd(Cmd):

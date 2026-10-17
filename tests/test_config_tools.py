@@ -364,7 +364,7 @@ class TestMigrationVerification(Base):
             DBMOD.MIGRATIONS_DIR = real
         before = d / "before.db"
         db.backup_to(before)
-        self.assertEqual(db.migrate(backup_dir=d / "bk"), ["014_balance_transfers.sql", "015_external_withdrawals_notifications.sql"])
+        self.assertEqual(db.migrate(backup_dir=d / "bk"), ["014_balance_transfers.sql", "015_external_withdrawals_notifications.sql", "016_disbursements.sql"])
         self.assertEqual(len(list((d / "bk").glob("pre-migration-*.db"))), 1)          # the automatic safety backup
         after = d / "after.db"
         db.backup_to(after)

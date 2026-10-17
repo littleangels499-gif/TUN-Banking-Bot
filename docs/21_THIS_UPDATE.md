@@ -1,3 +1,5 @@
+> The next update (transfers, grants, offshore wipe, embed fix) is described in [22](22_TRANSFERS_GRANTS_AND_OFFSHORE_WIPE.md).
+
 # 21. Update notes: funded credits, external withdrawals, DMs, reconciliation gate, settings tools
 
 ## What is new

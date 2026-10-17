@@ -17,7 +17,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 NEEDED = {"bank": {"credit", "adjust", "review", "withdrawself", "deposit"},
-          "bankset": {"config", "gate", "resetconfig", "iconpack", "backup", "icons"}}
+          "bankset": {"config", "gate", "resetconfig", "iconpack", "backup", "icons"},
+          "grant": {"send", "warchest", "city", "infrastructure", "land"},
+          "transfer": {"raws"},
+          "grantset": {"show", "warchest", "infra", "land", "citycap", "dailycash", "rules", "live", "batch", "resume"},
+          "offshore": {"wipe", "release", "assign", "reassign", "adjustownership"}}
 
 
 async def run() -> int:
