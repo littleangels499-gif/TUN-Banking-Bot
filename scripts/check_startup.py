@@ -59,6 +59,20 @@ async def run() -> int:
     await bot.setup_hook()
     print(f"OK  start-up: commands registered and accepted by discord.py ({len(synced)} top-level commands)")
 
+    # the /help screen is a real discord View: every category and page, for every permission level, must fit Discord's 5x5 button grid
+    from tunbank import cmds_help, perms
+    full = {"AUDITOR", "BANKER", "MINISTER", "ADMIN"} | {"FLAG:" + f for f in perms.FLAGS}
+    help_states = 0
+    for lv in (set(), {"AUDITOR"}, {"AUDITOR", "BANKER"}, {"AUDITOR", "BANKER", "MINISTER"}, full):
+        quick = [("My dashboard", "🏦", None), ("Market prices", "💹", None)] + ([("Vault", "🏛️", None), ("Integrity", "🛡️", None)] if lv == full else [])
+        view = cmds_help.HelpView(1, bot.tree, lv, quick)
+        for key, cards in view.pages.items():
+            for idx in range(len(cards)):
+                view.current, view.index = key, idx
+                view._build()                                   # raises ValueError exactly like Discord if a row overflows
+                help_states += 1
+    print(f"OK  help screens: {help_states} category/page states built under the real discord.py View rules")
+
     problems = []
     if len(synced) > 100:
         problems.append("more than 100 top-level commands")

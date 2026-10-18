@@ -74,6 +74,7 @@ def install():
         def __init__(self, label=None, emoji=None, style=None, disabled=False, custom_id=None, **kw):
             self.label, self.emoji, self.style, self.disabled, self.custom_id = label, emoji, style, disabled, custom_id
             self.callback = None
+            self.row = kw.get("row")
 
     class SelectOption:
         def __init__(self, label="", value=None, **kw):
@@ -82,6 +83,7 @@ def install():
     class Select:
         def __init__(self, placeholder="", options=None, min_values=1, max_values=1, **kw):
             self.placeholder, self.options, self.values, self.callback, self.disabled = placeholder, list(options or []), [], None, False
+            self.row = kw.get("row")
 
     class TextStyle:
         short = 1
@@ -105,6 +107,22 @@ def install():
             self._evt = asyncio.Event()
 
         def add_item(self, item):
+            """Enforce what Discord's View enforces: rows 0-4, at most 5 width per row (a Select takes the whole row), 25 items."""
+            if isinstance(item, (_Button, Select)):
+                real = [c for c in self.children if isinstance(c, (_Button, Select))]
+                width = 5 if isinstance(item, Select) else 1
+                if len(real) >= 25:
+                    raise ValueError("maximum number of children exceeded")
+                used = lambda r: sum(5 if isinstance(c, Select) else 1 for c in real if c.row == r)   # noqa: E731
+                if item.row is None:
+                    item.row = next((r for r in range(5) if used(r) + width <= 5), None)
+                    if item.row is None:
+                        raise ValueError("could not find open space for item")
+                else:
+                    if item.row < 0 or item.row > 4:
+                        raise ValueError("row cannot be negative or greater than or equal to 5")
+                    if used(item.row) + width > 5:
+                        raise ValueError(f"item would not fit at row {item.row} ({used(item.row) + width} > 5 width)")
             self.children.append(item)
 
         def clear_items(self):
