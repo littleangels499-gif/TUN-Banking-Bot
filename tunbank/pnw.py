@@ -53,6 +53,27 @@ MILITARY_FIELDS = ("soldiers", "tanks", "aircraft", "ships", "missiles", "nukes"
 RESOURCE_FIELDS = ("money", "coal", "oil", "uranium", "iron", "bauxite", "lead", "gasoline", "munitions", "steel", "aluminum", "food")
 
 
+def _int(v):
+    """PnW may return numbers as text ("5438"); None / empty / unreadable stays None so 'unknown' is never mistaken for 0."""
+    try:
+        return None if v is None or v == "" else int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _float(v):
+    try:
+        return None if v is None or v == "" else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool(v):
+    if v is None or isinstance(v, bool):
+        return v
+    return {"true": True, "1": True, "false": False, "0": False}.get(str(v).strip().lower())
+
+
 class PnWClient:
     def __init__(self, settings, min_interval: float = 0.6, timeout: float = 25.0):
         self.s = settings
@@ -362,21 +383,22 @@ class PnWClient:
             data = await self.query(q, {"id": chunk, "first": len(chunk)})
             for n in (data.get("nations", {}) or {}).get("data") or []:
                 nid = int(n["id"])
-                stock = {r: n.get(r) for r in RESOURCE_FIELDS}
+                stock = {r: _float(n.get(r)) for r in RESOURCE_FIELDS}
                 cities = []
                 for c in n.get("cities") or []:
-                    b = {k: c.get(k) for k in CITY_FIELDS if k not in ("id", "infrastructure", "land")}
-                    cities.append({"id": c.get("id"), "infrastructure": c.get("infrastructure"), "land": c.get("land"),
-                                   "buildings": None if any(v is None for v in b.values()) else {k: int(v) for k, v in b.items()}})
+                    b = {k: _int(c.get(k)) for k in CITY_FIELDS if k not in ("id", "infrastructure", "land")}
+                    cities.append({"id": _int(c.get("id")), "infrastructure": _float(c.get("infrastructure")), "land": _float(c.get("land")),
+                                   "buildings": None if any(v is None for v in b.values()) else b})
+                alliance_id = _int(n.get("alliance_id"))
                 out[nid] = {
-                    "id": nid, "name": n.get("nation_name") or "", "alliance_id": n.get("alliance_id"),
-                    "num_cities": n.get("num_cities"), "population": n.get("population"), "policy": n.get("domestic_policy"),
-                    "military": {k: n.get(k) for k in MILITARY_FIELDS},
+                    "id": nid, "name": n.get("nation_name") or "", "alliance_id": alliance_id,
+                    "num_cities": _int(n.get("num_cities")), "population": _int(n.get("population")), "policy": n.get("domestic_policy"),
+                    "military": {k: _int(n.get(k)) for k in MILITARY_FIELDS},
                     "stock": None if any(v is None for v in stock.values()) else stock,
-                    "projects": {k: n.get(k) for k in NATION_PROJECT_FIELDS},
+                    "projects": {k: _bool(n.get(k)) for k in NATION_PROJECT_FIELDS},
                     "cities": cities,
                 }
-                _identity.remember(nid, n.get("nation_name"), n.get("alliance_id"))
+                _identity.remember(nid, n.get("nation_name"), alliance_id)
         return out
 
     async def fetch_alliance_discords(self) -> list[dict]:

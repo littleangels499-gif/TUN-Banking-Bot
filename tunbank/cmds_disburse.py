@@ -94,15 +94,27 @@ def register(grant: app_commands.Group, transfer: app_commands.Group, grantset: 
     async def calculate(ids, calc_fn, kind):
         """Fetch live data and calculate every recipient. A nation PnW did not return, or that is not in the alliance, is flagged."""
         details = await svc.pnw.fetch_nations_detail(ids)
+        try:
+            roster = await svc.pnw.fetch_alliance_members()          # the proven member list (applicants excluded)
+        except (PnWRejected, PnWUncertain):
+            roster = None
         calcs = []
         for nid in ids:
             d = details.get(nid)
+            why = None
             if d is None:
+                why = "PnW did not return this nation"
+            else:
+                mine = svc.settings.alliance_id
+                reported = d.get("alliance_id")
+                if roster is not None and nid not in roster:
+                    why = (f"the nation is not in this alliance's member list (PnW reports alliance id {reported}; this bot serves {mine})"
+                           + (" - it may be an applicant, not a full member" if reported == mine else ""))
+                elif reported != mine:
+                    why = f"PnW reports this nation in alliance id {reported}, but this bot serves alliance {mine}"
+            if why:
                 c = PR.Calc(nation_id=nid)
-                c.review.append("PnW did not return this nation")
-            elif d.get("alliance_id") != svc.settings.alliance_id:
-                c = PR.Calc(nation_id=nid)
-                c.review.append("the nation is not currently in this alliance")
+                c.review.append(why)
             else:
                 c = calc_fn(d)
             calcs.append(c)
@@ -191,13 +203,15 @@ def register(grant: app_commands.Group, transfer: app_commands.Group, grantset: 
         assumptions = list(dict.fromkeys(a for c in sendable for a in c.assumptions))[:5]
         if assumptions:
             card.add("Assumptions", "\n".join(f"• {a}" for a in assumptions))
+        if not sendable:
+            card.title = f"{icons.status('wait')} {DB.LABEL[kind]} · nothing to send"
+            card.description = ("Nothing was sent. " + ("Every nation was left out for review (see below); the funding source was not the problem."
+                                                       if flagged else "The calculation came to nothing for these nations."))
+            return await reply(interaction, card=card)
         if errors:
             card.title = f"{icons.status('bad')} {DB.LABEL[kind]} · blocked"
             card.description = "Nothing was sent. The funding source cannot cover this as it stands."
             card.add("Problems", "\n".join(errors[:8]) + (f"\n…and {len(errors) - 8} more" if len(errors) > 8 else ""))
-            return await reply(interaction, card=card)
-        if not sendable:
-            card.add("Result", "There is nothing to send.")
             return await reply(interaction, card=card)
         with svc.db.read() as conn:
             live = DB.is_live(conn, kind)
