@@ -9,6 +9,11 @@ stay on the first one), confirmation screens show **every** part before asking y
 builder can no longer produce an invalid embed at all. The test harness now enforces Discord's real limits, so this cannot slip through again.
 *I could not reproduce your exact overflow with test data (my largest vault card reached 5,104 of 6,000), so I cannot say which numbers tipped yours over; the fix does not depend on that.*
 
+## 1b. Fixed after the first live test
+* **Every transfer/grant said the nation was "not in this alliance".** PnW returns ids as text and the check compared that text with a number, so it never matched. Numbers from PnW are now converted, membership is confirmed against the proven member list **and** the nation's own alliance id, and the message says exactly what PnW reported (for example "PnW reports alliance id 1234, but this bot serves 5678").
+* **The wrong message.** When every nation is left out for review the card now says "nothing to send" (and that the funding source was not the problem) instead of blaming the funding source.
+* **`/help` buttons** crashed once there were more than 8 categories (see guide 22's changelog above): rows are now computed.
+
 ## 2. The new commands
 All need the **grant level** (setting "Who may give grants", default Minister). Every one shows its **funding source first** and has a mandatory `source`.
 

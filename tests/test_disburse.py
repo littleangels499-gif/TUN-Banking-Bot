@@ -438,7 +438,7 @@ class TestFailureHandling(Base):
         self.assertEqual(self.pnw.withdraw_calls, 1)
         self.assertEqual(self.batches()[0]["status"], "PARTIAL")
         self.assertIn("review", i.text().lower())
-        self.assertIn("not currently in this alliance", self.items()[2]["message"])
+        self.assertIn("999", self.items()[2]["message"])                                               # says what PnW reported
 
     def test_pnw_unreadable_means_nothing_is_calculated_or_sent(self):
         from tunbank.pnw import PnWRejected
@@ -707,6 +707,30 @@ class TestSourceDescription(unittest.TestCase):
         b = PR.compute_warchest(nation(1, 13), M.parse_amounts("food=1000"), 1)
         self.assertNotEqual(DB.signature([a]), DB.signature([b]))
         self.assertEqual(DB.signature([a]), DB.signature([PR.compute_warchest(nation(1, 12), M.parse_amounts("food=1000"), 1)]))
+
+
+class TestPnWTextNumbers(unittest.TestCase):
+    """PnW returns ids and numbers as TEXT ("5438"). Comparing that with the alliance id once flagged every nation as 'not in this alliance'."""
+
+    def test_text_values_are_turned_into_numbers(self):
+        import asyncio
+
+        from tunbank import pnw as P
+        n = {f: "0" for f in P.NATION_SCALAR_FIELDS + P.NATION_PROJECT_FIELDS}
+        n.update(id="713016", nation_name="X", alliance_id="5438", num_cities="12", population="250000", money="5.5",
+                 urban_planning="true", advanced_urban_planning="false", domestic_policy="URBANIZATION")
+        n["cities"] = [{**{k: "1" for k in P.CITY_FIELDS}, "id": "9", "infrastructure": "1000.00", "land": "500.5"}]
+        client = P.PnWClient.__new__(P.PnWClient)
+
+        async def query(q, variables=None, **kw):
+            return {"nations": {"data": [n]}}
+        client.query = query
+        d = asyncio.run(client.fetch_nations_detail([713016]))[713016]
+        self.assertEqual((d["alliance_id"], d["num_cities"], d["population"]), (5438, 12, 250000))
+        self.assertEqual(d["stock"]["money"], 5.5)
+        self.assertEqual((d["projects"]["urban_planning"], d["projects"]["advanced_urban_planning"]), (True, False))
+        c = d["cities"][0]
+        self.assertEqual((c["id"], c["infrastructure"], c["land"], c["buildings"]["farm"]), (9, 1000.0, 500.5, 1))
 
 
 if __name__ == "__main__":
