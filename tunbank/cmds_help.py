@@ -186,21 +186,30 @@ class HelpView(discord.ui.View):
         self.add_item(b)
         return b
 
+    # Discord allows 5 buttons per row and 5 rows. Category buttons fill rows from the top, the page buttons and the quick buttons
+    # then each take the next free row, so the layout can never collide however many categories a user can see
+    # (it used to hard-code rows 2 and 3, so one extra category made row 2 hold 6 buttons and every help button crashed).
+    PER_ROW = 5
+    MAX_CATEGORIES = 15            # 3 rows of categories + 1 page row + 1 quick row = Discord's 5 rows
+
     def _build(self):
         self.clear_items()
         self.handlers = {}
-        for n, key in enumerate(self.pages):
+        keys = list(self.pages)[: self.MAX_CATEGORIES]
+        for n, key in enumerate(keys):
             label, emoji, _ = CATEGORIES[key]
             style = discord.ButtonStyle.primary if key == self.current else discord.ButtonStyle.secondary
-            self._button(label, emoji, style, n // 4, self._goto(key))
+            self._button(label, emoji, style, n // self.PER_ROW, self._goto(key))
+        row = (len(keys) + self.PER_ROW - 1) // self.PER_ROW
         pages = self.pages[self.current]
         if len(pages) > 1:
-            prev = self._button("Previous page", "◀️", discord.ButtonStyle.secondary, 2, self._step(-1))
-            nxt = self._button("Next page", "▶️", discord.ButtonStyle.secondary, 2, self._step(+1))
+            prev = self._button("Previous page", "◀️", discord.ButtonStyle.secondary, row, self._step(-1))
+            nxt = self._button("Next page", "▶️", discord.ButtonStyle.secondary, row, self._step(+1))
             prev.disabled = self.index <= 0
             nxt.disabled = self.index >= len(pages) - 1
-        for label, emoji, cb in self.quick:
-            self._button(label, emoji, discord.ButtonStyle.success, 3, cb)
+            row += 1
+        for label, emoji, cb in self.quick[: self.PER_ROW]:
+            self._button(label, emoji, discord.ButtonStyle.success, min(row, 4), cb)
 
     def _goto(self, key):
         async def go(interaction):
